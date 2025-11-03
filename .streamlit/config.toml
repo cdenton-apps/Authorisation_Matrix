@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#0D4B6A"                # brand blue (buttons, sliders)
+backgroundColor = "#F5F7FB"             # page bg
+secondaryBackgroundColor = "#FFFFFF"    # cards/containers
+textColor = "#0E1B2A"                   # body text
+font = "sans serif"                      # or "serif", "monospace"

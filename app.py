@@ -1,246 +1,320 @@
-# app.py — Solidus Approver Finder (progressive filters)
-import re, math, unicodedata
+# app.py — Solidus Approvals Finder (matrix wizard)
+
+import re
+import math
 import streamlit as st
-import pandas as pd
 from PIL import Image
 
-# ── Page / branding ────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Approver Finder — Solidus", page_icon="assets/solidus_favicon.png", layout="wide")
-st.markdown("""
-<style>
-#MainMenu, footer {visibility:hidden}
-.block-container{padding-top:2rem}
-thead tr th{background:#0D4B6A;color:#fff!important}
-tbody tr td{border-top:1px solid #E5E7EB!important}
-.stButton>button{background:#0D4B6A;color:#fff;border:0;border-radius:10px;padding:.5rem 1rem}
-.stButton>button:hover{filter:brightness(1.05)}
-.small{color:#64748B;font-size:.9rem}
-.badge{display:inline-block;padding:.15rem .5rem;border-radius:.5rem;background:#EEF2FF;color:#3730A3;font-size:.8rem}
-</style>""", unsafe_allow_html=True)
+# -----------------------------
+# Page setup & branding
+# -----------------------------
+st.set_page_config(page_title="Solidus Approvals Finder", layout="wide")
 
-h1, h2 = st.columns([1,6], vertical_alignment="center")
-with h1:
-    try: st.image("assets/solidus_logo.png", width=72)
-    except Exception: pass
-with h2:
+hide = """
+<style>
+ #MainMenu{visibility:hidden;} footer{visibility:hidden;}
+ .smallgray{color:#6b7280;font-size:0.9rem}
+ .note{background:#f7f7fb;border:1px solid #e5e7eb;border-radius:10px;padding:10px}
+ .role{font-weight:600}
+ .pill{display:inline-block;padding:.15rem .5rem;background:#eef2ff;border-radius:9999px;margin-left:.35rem;font-size:.8rem;color:#3730a3}
+</style>
+"""
+st.markdown(hide, unsafe_allow_html=True)
+
+left, right = st.columns([1, 3], gap="large")
+
+with left:
+    try:
+        st.image("assets/solidus_logo.png", width=260)  # bigger & wide
+    except Exception:
+        st.write(" ")
+
+with right:
+    st.markdown("<h1 style='color:#0D4B6A;margin:.2rem 0 .4rem 0'>Solidus Approvals Finder</h1>", unsafe_allow_html=True)
     st.markdown(
-        "<h1 style='margin:0;color:#0D4B6A'>Approver Finder</h1>"
-        "<div class='small'>Choose an area and category. Extra fields (course of business, budget, amount) appear only if required.</div>",
+        "<div class='smallgray'>Answer a few questions. We’ll filter down to the correct approving role(s). "
+        "If multiple roles are required, we list them in the recommended (lowest level first) order.</div>",
         unsafe_allow_html=True,
     )
-st.divider()
-
-# ── Matrix data (same content as before) ───────────────────────────────────────
-ROWS = [
-    {"Approver":"Shareholder","Purchase agreements":"N/A","Capex (SharePoint)":"Unlimited-subject to Capex committee review","Non-PO without contract":"N/A","Travel & Expenses":"N/A","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"N/A"},
-    {"Approver":"Board","Purchase agreements":"Outside normal course of business => €1.000k","Capex (SharePoint)":"=> €1.000k","Non-PO without contract":"N/A","Travel & Expenses":"CEO","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"Unlimited","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"Board members"},
-    {"Approver":"CEO","Purchase agreements":"Within normal course of business => €1.000k","Capex (SharePoint)":"- Within annual budget: => €100k ; - Outside annual budget: < €250k (individual) ; < €750k (group)","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"=> €1.000k","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"=> €100k","Manual Journal posting review":"N/A","Employment":"signs yearly salary/ hiring costs => €125k ; signs bonus => €50k"},
-    {"Approver":"CFO","Purchase agreements":"Within normal course of business => €1.000k","Capex (SharePoint)":"- Within annual budget: => €100k ; - Outside annual budget: < €250k (individual) ; < €750k (group)","Non-PO without contract":"=> €100k","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"=> €100k","Stock corrections / Counting / Disposals":"=> €50k < €100k","Manual Journal posting review":"N/A","Employment":"signs yearly salary/ hiring costs < €125k ; signs bonus < €50k"},
-    {"Approver":"CHRO","Purchase agreements":"N/A","Capex (SharePoint)":"- Within annual budget: => €25k < €100k ; - Others follow approval scheme","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"signs yearly salary/ hiring costs < €125k ; signs bonus < €50k"},
-    {"Approver":"Group Finance Director","Purchase agreements":"< €100k","Capex (SharePoint)":"- Within annual budget: => €25k < €100k ; - Others follow approval scheme","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"=> €100k EBITDA Impact","Employment":"N/A"},
-    {"Approver":"Strategy & Supply chain director","Purchase agreements":"=> €150k < €1.000k","Capex (SharePoint)":"Price / quality","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"N/A"},
-    {"Approver":"Group Legal","Purchase agreements":"Review Contract","Capex (SharePoint)":"N/A","Non-PO without contract":"N/A","Travel & Expenses":"N/A","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"N/A"},
-    {"Approver":"Vice President Division","Purchase agreements":"=> €100k < €150k","Capex (SharePoint)":"- Within annual budget: => €25k < €100k ; - Outside annual budget: < €25k ; - Others follow approval scheme","Non-PO without contract":"=> €25k < €100k","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"=> €25k < €1.000k","Credit Limits / Shipment blocks / Credit notes":"=> €25k < €100k","Stock corrections / Counting / Disposals":"=> €10k < €50k","Manual Journal posting review":"N/A","Employment":"signs yearly salary/ hiring costs < €125k ; signs bonus < €50k"},
-    {"Approver":"Location Manager","Purchase agreements":"< €100k","Capex (SharePoint)":"- Within annual budget: => €25k < €100k ; - Others follow approval scheme","Non-PO without contract":"< €25k","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"< €25k","Credit Limits / Shipment blocks / Credit notes":"=> €10k < €25k","Stock corrections / Counting / Disposals":"=> €2.5k < €10k","Manual Journal posting review":"N/A","Employment":"N/A"},
-    {"Approver":"Sales Director","Purchase agreements":"N/A","Capex (SharePoint)":"N/A","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"< €25k","Credit Limits / Shipment blocks / Credit notes":"< €10k","Stock corrections / Counting / Disposals":"N/A","Manual Journal posting review":"N/A","Employment":"N/A"},
-    {"Approver":"Controller / Finance manager","Purchase agreements":"N/A","Capex (SharePoint)":"- Within annual budget: < €25k","Non-PO without contract":"N/A","Travel & Expenses":"Direct reports","Quotes & Customer Contracts":"N/A","Credit Limits / Shipment blocks / Credit notes":"N/A","Stock corrections / Counting / Disposals":"=> €2.5k < €10k","Manual Journal posting review":"< €100k EBITDA Impact","Employment":"N/A"},
-]
-GROUPS = {
-    "Purchase": ["Purchase agreements","Capex (SharePoint)","Non-PO without contract","Travel & Expenses"],
-    "Sales": ["Quotes & Customer Contracts","Credit Limits / Shipment blocks / Credit notes"],
-    "Other": ["Stock corrections / Counting / Disposals","Manual Journal posting review"],
-    "HR": ["Employment"],
-}
-
-# ── Role → people (from your list) + emails ───────────────────────────────────
-DEFAULT_PEOPLE = {
-    "Shareholder":"",
-    "Board":"Solidus Investment / Board",
-    "CEO":"Niels Flierman",
-    "CFO":"David Kubala",
-    "CHRO":"Erik van Mierlo",
-    "Strategy & Supply chain director":"Robert Egging/Ignacio Aguado",
-    "Group Finance Director":"Hielke Bremer",
-    "Group Legal":"David Kubala",
-    "Vice President Division":"Jan-Willem Kleppers",
-    "Location Manager":"MD (Vacant)",
-    "Sales Director":"Paul Garstang",
-    "Controller / Finance manager":"Tony Noble",
-}
-def strip_accents(s:str)->str:
-    return ''.join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
-def name_to_email(name:str)->str|None:
-    n=strip_accents(name.strip())
-    if not n or "vacant" in n.lower(): return None
-    n=n.replace("'", "")
-    parts=[p for p in re.split(r"\s+", n) if p]
-    if len(parts)<2: return None
-    first=re.sub(r"[^a-z0-9\-]","", parts[0].lower())
-    last=re.sub(r"[^a-z0-9\-]","", parts[-1].lower())
-    return f"{first}.{last}@solidus.com" if first and last else None
-def names_to_emails(field:str)->list[str]:
-    if not field: return []
-    out=[]
-    for chunk in [c.strip() for c in re.split(r"[/,&]", field) if c.strip()]:
-        e=name_to_email(chunk)
-        if e: out.append(e)
-    return out
-st.sidebar.markdown("### Role → Person (editable)")
-PEOPLE={}
-for role, default in DEFAULT_PEOPLE.items():
-    PEOPLE[role]=st.sidebar.text_input(role, value=default, placeholder="Name(s)")
-st.sidebar.caption("Use '/' for multiple names. Emails generated as firstname.lastname@solidus.com.")
-
-# ── Helpers: parse rules into facets (CoB, Budget, Ranges) ────────────────────
-DF = pd.DataFrame(ROWS)
-
-def euro_to_number(s:str)->float|None:
-    s=s.strip().replace("€","").replace(" ","")
-    if not s: return None
-    mult=1.0
-    if s.lower().endswith("k"): mult=1000.0; s=s[:-1]
-    s=s.replace(".", "").replace(",", ".")
-    try: return float(s)*mult
-    except: return None
-
-R_PAT = [
-    re.compile(r"[>]=?\s*€?([\d\.,kK]+)\s*<\s*€?([\d\.,kK]+)"), # => x < y
-    re.compile(r"<\s*€?([\d\.,kK]+)"),                         # < y
-    re.compile(r"[>]=?\s*€?([\d\.,kK]+)"),                     # => y (we treat as threshold)
-]
-
-def extract_ranges(text:str)->list[tuple[float|None,float|None]]:
-    if not text or text.upper()=="N/A": return []
-    text=text.replace("=>","≥")  # normalize sign for readability (optional)
-    out=[]
-    for part in re.split(r"[;\n•]+", text):
-        p=part.strip()
-        if not p: continue
-        if "Unlimited" in p: out.append((None,None)); continue
-        m=R_PAT[0].search(p)
-        if m:
-            lo=euro_to_number(m.group(1)); hi=euro_to_number(m.group(2)); out.append((lo,hi)); continue
-        m=R_PAT[1].search(p)
-        if m:
-            hi=euro_to_number(m.group(1)); out.append((None,hi)); continue
-        m=R_PAT[2].search(p)
-        if m:
-            # threshold only; keep as (None, value) meaning "≤ value" (policy texts typically mean up to)
-            hi=euro_to_number(m.group(1)); out.append((None,hi)); continue
-    return out
-
-def tokenize_facets(text:str)->dict:
-    t=(text or "").lower()
-    return {
-        "cob": "Within normal" if "within normal course of business" in t
-               else "Outside normal" if "outside normal course of business" in t
-               else None,
-        "budget": "Within annual budget" if "within annual budget" in t
-                  else "Outside annual budget" if "outside annual budget" in t
-                  else "Price / quality" if "price / quality" in t
-                  else None,
-        "ranges": extract_ranges(text or ""),
-        "raw": text or "",
-    }
-
-def amount_matches(ranges:list[tuple[float|None,float|None]], amount:float|None)->bool:
-    if amount is None:
-        return len(ranges)>0 or True   # if no amount given, don't block match
-    if not ranges: return False
-    for lo,hi in ranges:
-        if lo is None and hi is None: return True
-        if lo is None and hi is not None and amount <= hi+1e-6: return True
-        if lo is not None and hi is not None and (lo-1e-6) <= amount <= (hi+1e-6): return True
-    return False
-
-# ── Step 1/2: Area → Category ────────────────────────────────────────────────
-cA,cB = st.columns([1.2,1.8])
-with cA:
-    area = st.selectbox("Area", list(GROUPS.keys()), index=0)
-with cB:
-    categories = GROUPS[area]
-    category  = st.selectbox("Category", categories, index=0)
-
-col_rules = DF[category].tolist()
-
-# ── Scan selected category to decide which extra inputs are needed ────────────
-need_cob     = any("course of business" in str(x).lower() for x in col_rules)
-need_budget  = any(("annual budget" in str(x).lower()) or ("price / quality" in str(x).lower()) for x in col_rules)
-need_amount  = any(len(extract_ranges(str(x)))>0 for x in col_rules)
-
-# Build option lists based on what actually appears
-cob_opts=set()
-budget_opts=set()
-for txt in col_rules:
-    f=tokenize_facets(str(txt))
-    if f["cob"]: cob_opts.add(f["cob"])
-    if f["budget"]: budget_opts.add(f["budget"])
-
-cob_list    = ["(Any)"] + sorted(cob_opts) if cob_opts else ["(Any)"]
-budget_list = ["(Any)"] + sorted(budget_opts) if budget_opts else ["(Any)"]
-
-st.markdown("")
-
-ux1, ux2, ux3 = st.columns(3)
-with ux1:
-    cob_sel = st.selectbox("Course of business", cob_list, index=0) if need_cob else "(Any)"
-with ux2:
-    budget_sel = st.selectbox("Budget context", budget_list, index=0) if need_budget else "(Any)"
-with ux3:
-    amount = None
-    if need_amount:
-        amount_eur = st.number_input("Amount (€)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
-        amount = None if amount_eur==0.0 else amount_eur
 
 st.divider()
 
-# ── Match rows ────────────────────────────────────────────────────────────────
-matches=[]
-for _, row in DF.iterrows():
-    cell = str(row[category] or "").strip()
-    if not cell or cell.upper()=="N/A": continue
-    f = tokenize_facets(cell)
-    if cob_sel!="(Any)" and f["cob"]!=cob_sel: continue
-    if budget_sel!="(Any)" and f["budget"]!=budget_sel: continue
-    if need_amount and not amount_matches(f["ranges"], amount): continue
+# -----------------------------
+# People in roles (easy to edit)
+# -----------------------------
+ROLE_PEOPLE = {
+    "Shareholder": "",
+    "Solidus Investment / Board": "Board members",
+    "CEO": "Niels Flierman",
+    "CFO": "David Kubala",
+    "CHRO": "Erik van Mierlo",
+    "Strategy & Supply chain director": "Robert Egging/Ignacio Aguado",
+    "Group Finance Director": "Hielke Bremer",
+    "Group Legal": "David Kubala",
+    "Vice President Division": "Jan-Willem Kleppers",
+    "Location Director": "MD (Vacant)",
+    "Sales Director": "Paul Garstang",
+    "Controller / Finance manager": "Tony Noble",
+}
 
-    role = row["Approver"]
-    name_field = PEOPLE.get(role,"")
-    emails = names_to_emails(name_field)
-    matches.append({
-        "Approving Entity": role,
-        "Person(s)": name_field,
-        "Email(s)": ", ".join(emails),
-        "Rule Text": cell
-    })
+def to_emails(name: str) -> list[str]:
+    """Build firstname.lastname@solidus.com (handles slashes, hyphens, spaces)."""
+    if not name or "vacant" in name.lower():
+        return []
+    parts = re.split(r"[\/,]| and ", name, flags=re.I)
+    emails = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # remove parentheses content
+        p = re.sub(r"\(.*?\)", "", p).strip()
+        # keep letters, spaces, hyphens
+        p = re.sub(r"[^A-Za-z\-\s]", "", p)
+        p = re.sub(r"\s+", " ", p).strip().lower()
+        if not p:
+            continue
+        first_last = p.replace(" ", ".")
+        emails.append(f"{first_last}@solidus.com")
+    return emails
 
-seniority = ["Shareholder","Board","CEO","CFO","CHRO","Group Finance Director",
-             "Strategy & Supply chain director","Group Legal","Vice President Division",
-             "Location Manager","Sales Director","Controller / Finance manager"]
-order_map = {r:i for i,r in enumerate(seniority)}
-matches.sort(key=lambda r: order_map.get(r["Approving Entity"], math.inf))
+# -----------------------------
+# Rules (short, practical mapping)
+# -----------------------------
+EUR = "€"
 
-# ── Output ────────────────────────────────────────────────────────────────────
-st.markdown(f"### Results for **{area} → {category}**")
-if not matches:
-    msg = "No approver found. "
-    hints=[]
-    if need_cob: hints.append("course of business")
-    if need_budget: hints.append("budget context")
-    if need_amount: hints.append("amount")
-    if hints:
-        msg += "Try adjusting " + ", ".join(hints) + "."
-    st.info(msg)
+# Helper to display amount nicely
+def money(x: float) -> str:
+    return f"{EUR}{x:,.0f}".replace(",", " ")  # thin-space
+
+# Purchase – Purchase (contract) agreements
+def purchase_contract_rules(amount: float, in_normal_course: bool) -> list[str]:
+    roles: list[str] = []
+    if not in_normal_course:
+        # Outside normal course: Board if >= 1,000k
+        if amount >= 1_000_000:
+            roles.append("Solidus Investment / Board")
+        # and still follow the amount routing below for business owner chain
+    # Within the normal course (or regardless, pick level by amount)
+    if amount < 100_000:
+        # Lowest level first
+        roles += ["Location Director", "Group Finance Director"]
+    elif 100_000 <= amount < 150_000:
+        roles.append("Vice President Division")
+    elif 150_000 <= amount < 1_000_000:
+        roles.append("Strategy & Supply chain director")
+    else:  # >= 1,000,000
+        roles.append("CEO")
+    # Always include Legal review for contracts (at the end)
+    roles.append("Group Legal")
+    return roles
+
+# Purchase – (non) PO purchases without a contract
+def purchase_nonpo_rules(amount: float) -> list[str]:
+    if amount < 25_000:
+        return ["Location Director"]
+    elif amount < 100_000:
+        return ["Vice President Division"]
+    else:
+        return ["CFO"]
+
+# Purchase – Capital / Capex
+def capex_rules(amount: float, within_budget: bool, scope: str) -> list[str]:
+    """
+    within_budget: True/False
+    scope: "Individual company" | "Group"
+    """
+    chain: list[str] = []
+    # Lowest levels by budget bands (from matrix)
+    if within_budget:
+        if amount < 25_000:
+            chain.append("Controller / Finance manager")
+        elif amount < 100_000:
+            chain += ["Group Finance Director", "Vice President Division"]
+        else:
+            chain.append("CEO")
+    else:
+        # outside budget – different caps
+        if scope == "Individual company":
+            if amount < 25_000:
+                chain.append("Vice President Division")
+            elif amount < 250_000:
+                chain.append("CEO")
+            else:
+                chain.append("CEO")  # CEO and likely Board via Capex committee
+        else:  # Group basis
+            if amount < 750_000:
+                chain.append("CEO")
+            else:
+                chain.append("Solidus Investment / Board")
+    return chain
+
+# Sales – Quotes & Customer Contracts
+def sales_quotes_rules(amount: float) -> list[str]:
+    if amount < 25_000:
+        # two roles at the low end; keep lowest level first
+        return ["Location Director", "Sales Director"]
+    elif amount < 1_000_000:
+        return ["Vice President Division"]
+    else:
+        return ["CEO"]
+
+# Sales – Commercial Credit Limits & release of shipment blocks & credit notes
+def sales_credit_rules(amount: float) -> list[str]:
+    if amount < 10_000:
+        return ["Sales Director"]
+    elif amount < 25_000:
+        return ["Location Director"]
+    elif amount < 100_000:
+        return ["Vice President Division"]
+    else:
+        return ["CFO"]
+
+# Other – Stock corrections & counting differences & stock disposals
+def other_stock_rules(amount: float) -> list[str]:
+    if amount < 2_500:
+        return []
+    elif amount < 10_000:
+        # matrix shows both; keep lowest level first and include Controller (finance impact)
+        return ["Location Director", "Controller / Finance manager"]
+    elif amount < 50_000:
+        return ["Vice President Division"]
+    elif amount < 100_000:
+        return ["CFO"]
+    else:
+        return ["CFO"]  # escalate
+
+# Other – Manual journal entry posting review
+def other_manual_journal_rules(ebitda_impact: float) -> list[str]:
+    if abs(ebitda_impact) < 100_000:
+        return ["Controller / Finance manager"]
+    else:
+        return ["Group Finance Director"]
+
+# HR – Employment & benefits
+def hr_employment_rules(salary: float, bonus: float, is_board_member: bool) -> list[str]:
+    if is_board_member:
+        return ["Solidus Investment / Board"]
+    # CEO thresholds: salary >= 125k OR bonus >= 50k
+    if salary >= 125_000 or bonus >= 50_000:
+        return ["CEO"]
+    # otherwise multiple roles can sign; list lowest level first
+    return ["Vice President Division", "CHRO", "CFO"]
+
+# -----------------------------
+# Wizard
+# -----------------------------
+st.subheader("1) Choose area")
+area = st.selectbox(
+    "Area",
+    ["Purchase", "Sales", "Other", "HR"],
+)
+
+# The user journey splits here, only asking for relevant inputs.
+result_roles: list[str] = []
+extra_notes: list[str] = []
+
+if area == "Purchase":
+    sub = st.selectbox(
+        "Type",
+        ["Purchase (contract) agreements", "(non) PO-purchases without a contract", "Capital / Capex"],
+    )
+
+    if sub == "Purchase (contract) agreements":
+        in_course = st.selectbox("Within normal course of business?", ["Yes", "No"]) == "Yes"
+        amount = st.number_input("Contract value (cumulative across term)", min_value=0.0, step=1000.0, format="%.0f")
+        if amount and amount >= 0:
+            result_roles = purchase_contract_rules(amount, in_course)
+            extra_notes.append("Group Legal review is always required for contracts.")
+            if not in_course and amount >= 1_000_000:
+                extra_notes.append("Outside normal course ≥ €1,000k requires Board approval.")
+
+    elif sub == "(non) PO-purchases without a contract":
+        amount = st.number_input("Amount", min_value=0.0, step=500.0, format="%.0f")
+        if amount and amount >= 0:
+            result_roles = purchase_nonpo_rules(amount)
+
+    else:  # Capital / Capex
+        within = st.selectbox("Within annual budget?", ["Yes", "No"]) == "Yes"
+        scope = st.selectbox("Scope (if outside budget)", ["Individual company", "Group"]) if not within else "Individual company"
+        amount = st.number_input("Capex amount", min_value=0.0, step=1000.0, format="%.0f")
+        if amount and amount >= 0:
+            result_roles = capex_rules(amount, within, scope)
+            extra_notes.append("Board may review high-value Capex via the Capex committee.")
+
+elif area == "Sales":
+    sub = st.selectbox(
+        "Type",
+        ["Quotes & Customer Contracts", "Commercial Credit Limits / Blocks / Credit notes"],
+    )
+    amount = st.number_input("Amount", min_value=0.0, step=500.0, format="%.0f")
+    if sub.startswith("Quotes"):
+        if amount and amount >= 0:
+            result_roles = sales_quotes_rules(amount)
+    else:
+        if amount and amount >= 0:
+            result_roles = sales_credit_rules(amount)
+
+elif area == "Other":
+    sub = st.selectbox(
+        "Type",
+        ["Stock corrections / counting differences / stock disposals", "Manual journal entry posting review"],
+    )
+    if sub.startswith("Stock"):
+        amount = st.number_input("Absolute value of stock adjustment", min_value=0.0, step=100.0, format="%.0f")
+        if amount and amount >= 0:
+            result_roles = other_stock_rules(amount)
+    else:
+        impact = st.number_input("EBITDA impact of the journal (absolute value)", min_value=0.0, step=100.0, format="%.0f")
+        if impact and impact >= 0:
+            result_roles = other_manual_journal_rules(impact)
+
+else:  # HR
+    is_board = st.checkbox("Is the person a Board member?")
+    salary = st.number_input("Annual salary (EUR)", min_value=0.0, step=1000.0, format="%.0f")
+    bonus = st.number_input("Annual bonus (EUR)", min_value=0.0, step=1000.0, format="%.0f")
+    # Only evaluate once user typed something meaningful
+    result_roles = hr_employment_rules(salary, bonus, is_board)
+
+st.divider()
+
+# -----------------------------
+# Output results
+# -----------------------------
+st.subheader("2) Approver(s)")
+
+if not result_roles:
+    st.info("Provide the required inputs above to see approvers.")
 else:
-    out = pd.DataFrame(matches)
-    st.markdown(f"<span class='badge'>{len(out)} match(es)</span>", unsafe_allow_html=True)
-    st.dataframe(out, use_container_width=True)
+    # Deduplicate but keep order
+    seen = set()
+    ordered_roles = []
+    for r in result_roles:
+        if r not in seen:
+            ordered_roles.append(r)
+            seen.add(r)
 
-    best = matches[0]
-    st.markdown("#### Recommended Approver")
-    email_note  = f" — {best['Email(s)']}" if best["Email(s)"] else ""
-    person_note = f" ({best['Person(s)']})"  if best["Person(s)"] else ""
-    st.success(f"**{best['Approving Entity']}**{person_note}{email_note}\n\nPolicy match: _{best['Rule Text']}_")
+    for idx, role in enumerate(ordered_roles, start=1):
+        person = ROLE_PEOPLE.get(role, "")
+        emails = to_emails(person)
+        email_txt = ", ".join(emails) if emails else "—"
+        st.markdown(
+            f"<div class='note'><span class='role'>{idx}. {role}</span>"
+            f"<span class='pill'>lowest level first</span><br>"
+            f"Current person: {person or '—'}<br>"
+            f"Email: {email_txt}</div>",
+            unsafe_allow_html=True,
+        )
 
-st.markdown("<hr/>", unsafe_allow_html=True)
-st.markdown("<div class='small'>© Solidus — Internal tool. Policy owners: Finance & Legal.</div>", unsafe_allow_html=True)
+    if extra_notes:
+        st.markdown("**Notes:**")
+        for n in extra_notes:
+            st.markdown(f"- {n}")
+
+st.divider()
+
+st.markdown(
+    "<div class='smallgray'>Clarifications, guidelines & definitions are embedded in this wizard. "
+    "Values/ranges and role-to-person mappings can be edited at the top of the file.</div>",
+    unsafe_allow_html=True,
+)

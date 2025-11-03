@@ -1,399 +1,409 @@
-# app.py — Approver Finder (Streamlit)
-
+# app.py — Solidus Approver Finder
+# ------------------------------------------------------------
 import re
-import json
 import math
-import io
-from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from PIL import Image
 
-# -------------------------------
-# Page config + small CSS
-# -------------------------------
-st.set_page_config(page_title="Approver Finder", layout="wide")
+# ---------- Branding & page config ----------
+st.set_page_config(
+    page_title="Approver Finder — Solidus",
+    page_icon="assets/solidus_favicon.png",
+    layout="wide",
+)
+
 st.markdown("""
 <style>
-#MainMenu {visibility: hidden;} footer {visibility: hidden;}
-.small { color: #666; font-size: 0.9em; }
-.highlight { background: #ecfdf5; padding: .5rem .75rem; border-radius: .5rem; }
+#MainMenu {visibility:hidden} footer {visibility:hidden}
+.block-container {padding-top: 2rem;}
+thead tr th { background:#0D4B6A; color:#fff !important; }
+tbody tr td { border-top: 1px solid #E5E7EB !important; }
+.stButton>button { background:#0D4B6A; color:#fff; border:0; border-radius:10px; padding:.5rem 1rem; }
+.stButton>button:hover { filter:brightness(1.05); }
+.small { color:#64748B; font-size:.9rem; }
+.badge { display:inline-block; padding:.15rem .5rem; border-radius:.5rem; background:#EEF2FF; color:#3730A3; font-size:.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------
-# Data model
-# -------------------------------
-@dataclass
-class Rule:
-    block: str                 # Purchase / Sales / Other / HR
-    activity: str              # e.g. "Purchase agreements", "Capex", "Quotes", ...
-    condition: str             # human text: "=> €25k < €100k", "Outside normal course of business => €1,000k"
-    approver_role: str         # e.g. "Board", "CEO"
-    notes: str = ""            # optional extra note
+head1, head2 = st.columns([1,6], vertical_alignment="center")
+with head1:
+    try:
+        st.image("assets/solidus_logo.png", width=72)
+    except Exception:
+        st.write("")
+with head2:
+    st.markdown(
+        "<h1 style='margin:0; color:#0D4B6A;'>Approver Finder</h1>"
+        "<div class='small'>Find the correct approver based on policy rules. Update role→person in the sidebar.</div>",
+        unsafe_allow_html=True,
+    )
+st.divider()
 
-# -------------------------------
-# Parsing helpers
-# -------------------------------
-_c_eur = re.compile(r"€\s*([\d.,]+)\s*([kKmM]?)")
-def _to_eur(value: str) -> Optional[float]:
-    """
-    Convert strings like '€25k', '€1,000k', '€750k', '€100k', '€1.5m' to float euros.
-    Returns None if not found.
-    """
-    m = _c_eur.search(value.replace("’", "'"))
-    if not m:
-        return None
-    num = float(m.group(1).replace(",", ""))
-    suf = m.group(2).lower()
-    if suf == "k":
-        num *= 1_000
-    elif suf == "m":
-        num *= 1_000_000
-    return num
-
-def parse_range(text: str) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Parse ranges from condition text.
-    Supports:
-      - '=> €25k < €100k'  -> (25000, 100000)
-      - '< €25k'           -> (None, 25000)
-      - '=> €100k'         -> (100000, None)
-      - 'Unlimited'        -> (0, inf)
-      - 'N/A'              -> (None, None)
-    If nothing numeric is found, returns (None, None) and we’ll match by flags.
-    """
-    t = text.replace(",", "").lower()
-
-    if "unlimited" in t:
-        return (0.0, math.inf)
-    if "n/a" in t or "na" == t.strip():
-        return (None, None)
-
-    # "=> €25k < €100k"  (inclusive lower, exclusive upper)
-    m = re.search(r"=>\s*€\s*([\d.,]+)\s*([kKmM]?)\s*<\s*€\s*([\d.,]+)\s*([kKmM]?)", text)
-    if m:
-        lo = float(m.group(1).replace(",", ""))
-        hi = float(m.group(3).replace(",", ""))
-        if m.group(2).lower() == "k": lo *= 1_000
-        if m.group(2).lower() == "m": lo *= 1_000_000
-        if m.group(4).lower() == "k": hi *= 1_000
-        if m.group(4).lower() == "m": hi *= 1_000_000
-        return (lo, hi)
-
-    # "=> €100k"
-    m = re.search(r"=>\s*€\s*([\d.,]+)\s*([kKmM]?)", text)
-    if m:
-        lo = float(m.group(1).replace(",", ""))
-        if m.group(2).lower() == "k": lo *= 1_000
-        if m.group(2).lower() == "m": lo *= 1_000_000
-        return (lo, None)
-
-    # "< €25k"
-    m = re.search(r"<\s*€\s*([\d.,]+)\s*([kKmM]?)", text)
-    if m:
-        hi = float(m.group(1).replace(",", ""))
-        if m.group(2).lower() == "k": hi *= 1_000
-        if m.group(2).lower() == "m": hi *= 1_000_000
-        return (None, hi)
-
-    return (None, None)
-
-def amount_matches(amount: Optional[float], rng: Tuple[Optional[float], Optional[float]]) -> bool:
-    """Check if amount fits (lo, hi) with lo inclusive, hi exclusive."""
-    if amount is None:  # if no amount given we allow match-by-flags later
-        return True
-    lo, hi = rng
-    if lo is None and hi is None:
-        return True
-    if lo is None:
-        return amount < hi
-    if hi is None:
-        return amount >= lo
-    return (amount >= lo) and (amount < hi)
-
-def flags_match(flag_text: str, within_budget: Optional[bool], outside_normal: Optional[bool], company_level: Optional[str]) -> bool:
-    """
-    Tries to match simple flags based on substrings present in the condition:
-    - within budget
-    - outside annual budget
-    - outside normal course of business
-    - individual company / group basis
-    """
-    t = flag_text.lower()
-
-    if within_budget is True and "within annual budget" not in t and "within normal course" not in t:
-        return False
-    if within_budget is False and ("outside annual budget" not in t and "outside normal course" not in t):
-        # if user says not within budget, condition must mention outside
-        return False
-
-    if outside_normal is True and "outside normal course" not in t:
-        return False
-    # if outside_normal is False we don't require any special phrase
-
-    if company_level == "Individual" and "individual company" not in t and "group" in t:
-        # rule specifically mentions group but not individual
-        return False
-    if company_level == "Group" and "group" not in t and "individual company" in t:
-        return False
-
-    return True
-
-# -------------------------------
-# Built-in SAMPLE rules (you can extend or replace via CSV)
-# -------------------------------
-SAMPLE_RULES: List[Rule] = [
-    # PURCHASE — Purchase agreements
-    Rule("Purchase", "Purchase agreements",
-         "Outside normal course of business => €1,000k", "Board"),
-    Rule("Purchase", "Purchase agreements",
-         "Within normal course of business => €1,000k", "CEO"),
-    Rule("Purchase", "Purchase agreements",
-         "Within normal course of business => €1,000k", "CFO"),
-
-    # PURCHASE — Capex
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Unlimited-subject to Capex committee review", "Shareholder"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Within annual budget: => €100k", "CEO"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Outside annual budget: < €250k (individual company) < €750k (group basis)", "CEO"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Within annual budget: => €100k", "CFO"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Outside annual budget: < €250k (individual company) < €750k (group basis)", "CFO"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Within annual budget: => €25k < €100k", "CHRO"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Within annual budget: => €25k < €100k", "Group Finance Director"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "=> €25k < €100k (VPD)", "Vice President Division"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "< €25k (Location Manager)", "Location Manager"),
-    Rule("Purchase", "Capex / Capex (SharePoint)",
-         "Within annual budget: < €25k (Controller)", "Controller / Finance manager"),
-
-    # PURCHASE — (non) PO without contract
-    Rule("Purchase", "(non) PO-purchases without a contract", "=> €100k", "CFO"),
-    Rule("Purchase", "(non) PO-purchases without a contract", "=> €25k < €100k", "Vice President Division"),
-    Rule("Purchase", "(non) PO-purchases without a contract", "< €25k", "Location Manager"),
-
-    # PURCHASE — Travel & Expense
-    Rule("Purchase", "Travel approval & Expense Reports", "CEO", "CEO"),
-    Rule("Purchase", "Travel approval & Expense Reports", "Direct reports", "All Directors"),
-
-    # SALES — Quotes & Customer Contracts
-    Rule("Sales", "Quotes & Customer Contracts", "=> €1,000k", "CEO"),
-    Rule("Sales", "Commercial Credit Limits & Release of shipment blocks & Credit notes",
-         "Unlimited", "Board"),
-
-    # SALES — Credit limits / credit notes typical
-    Rule("Sales", "Commercial Credit Limits & Release of shipment blocks & Credit notes",
-         "=> €100k", "CFO"),
-    Rule("Sales", "Commercial Credit Limits & Release of shipment blocks & Credit notes",
-         "=> €25k < €100k", "Vice President Division"),
-    Rule("Sales", "Commercial Credit Limits & Release of shipment blocks & Credit notes",
-         "< €10k < €25k", "Location Manager"),
-    Rule("Sales", "Commercial Credit Limits & Release of shipment blocks & Credit notes",
-         "< €10k", "Sales Director"),
-
-    # OTHER — Stock corrections & disposals
-    Rule("Other", "Stock corrections & Counting differences & Stock disposals",
-         "=> €50k < €100k", "CFO"),
-    Rule("Other", "Stock corrections & Counting differences & Stock disposals",
-         "=> €10k < €50k", "Vice President Division"),
-    Rule("Other", "Stock corrections & Counting differences & Stock disposals",
-         "=> €2.5k < €10k", "Location Manager"),
-    Rule("Other", "Stock corrections & Counting differences & Stock disposals",
-         "=> €2.5k < €10k", "Controller / Finance manager"),  # from lower block
-
-    # OTHER — Manual Journal
-    Rule("Other", "Manual Journal entry posting review", "=> €100k EBITDA Impact", "Group Finance Director"),
-    Rule("Other", "Manual Journal entry posting review", "< €100k EBITDA Impact", "Controller / Finance manager"),
-
-    # HR — Employment (very high-level placeholders)
-    Rule("HR", "Employment", "Board members", "Board"),
-    Rule("HR", "Employment", "signs yearly salary/ hiring costs => €125k", "CEO"),
-    Rule("HR", "Employment", "signs yearly salary/ hiring costs < €125k", "CFO"),
-    Rule("HR", "Employment", "signs yearly salary/ hiring costs < €125k", "CHRO"),
-    Rule("HR", "Employment", "signs yearly salary/ hiring costs < €125k", "Vice President Division"),
+# ---------- Matrix (embedded) ----------
+# Columns are grouped for clarity. Each row = Approving Entity.
+# Cell text mirrors your matrix (kept deliberately close for auditability).
+ROWS = [
+    {
+        "Approver": "Shareholder",
+        "Purchase agreements": "N/A",
+        "Capex (SharePoint)": "Unlimited-subject to Capex committee review",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "N/A",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Board",
+        "Purchase agreements": "Outside normal course of business => €1.000k",
+        "Capex (SharePoint)": "=> €1.000k",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "CEO",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "Unlimited",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "Board members",
+    },
+    {
+        "Approver": "CEO",
+        "Purchase agreements": "Within normal course of business => €1.000k",
+        "Capex (SharePoint)": "- Within annual budget: => €100k ; - Outside annual budget: < €250k (individual) ; < €750k (group)",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "=> €1.000k",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "=> €100k",
+        "Manual Journal posting review": "N/A",
+        "Employment": "signs yearly salary/ hiring costs => €125k ; signs bonus => €50k",
+    },
+    {
+        "Approver": "CFO",
+        "Purchase agreements": "Within normal course of business => €1.000k",
+        "Capex (SharePoint)": "- Within annual budget: => €100k ; - Outside annual budget: < €250k (individual) ; < €750k (group)",
+        "Non-PO without contract": "=> €100k",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "=> €100k",
+        "Stock corrections / Counting / Disposals": "=> €50k < €100k",
+        "Manual Journal posting review": "N/A",
+        "Employment": "signs yearly salary/ hiring costs < €125k ; signs bonus < €50k",
+    },
+    {
+        "Approver": "CHRO",
+        "Purchase agreements": "N/A",
+        "Capex (SharePoint)": "- Within annual budget: => €25k < €100k ; - Others follow approval scheme",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "signs yearly salary/ hiring costs < €125k ; signs bonus < €50k",
+    },
+    {
+        "Approver": "Group Finance Director",
+        "Purchase agreements": "< €100k",
+        "Capex (SharePoint)": "- Within annual budget: => €25k < €100k ; - Others follow approval scheme",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "=> €100k EBITDA Impact",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Strategy & Supply chain director",
+        "Purchase agreements": "=> €150k < €1.000k",
+        "Capex (SharePoint)": "Price / quality",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Group Legal",
+        "Purchase agreements": "Review Contract",
+        "Capex (SharePoint)": "N/A",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "N/A",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Vice President Division",
+        "Purchase agreements": "=> €100k < €150k",
+        "Capex (SharePoint)": "- Within annual budget: => €25k < €100k ; - Outside annual budget: < €25k ; - Others follow approval scheme",
+        "Non-PO without contract": "=> €25k < €100k",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "=> €25k < €1.000k",
+        "Credit Limits / Shipment blocks / Credit notes": "=> €25k < €100k",
+        "Stock corrections / Counting / Disposals": "=> €10k < €50k",
+        "Manual Journal posting review": "N/A",
+        "Employment": "signs yearly salary/ hiring costs < €125k ; signs bonus < €50k",
+    },
+    {
+        "Approver": "Location Manager",
+        "Purchase agreements": "< €100k",
+        "Capex (SharePoint)": "- Within annual budget: => €25k < €100k ; - Others follow approval scheme",
+        "Non-PO without contract": "< €25k",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "< €25k",
+        "Credit Limits / Shipment blocks / Credit notes": "=> €10k < €25k",
+        "Stock corrections / Counting / Disposals": "=> €2.5k < €10k",
+        "Manual Journal posting review": "N/A",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Sales Director",
+        "Purchase agreements": "N/A",
+        "Capex (SharePoint)": "N/A",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "< €25k",
+        "Credit Limits / Shipment blocks / Credit notes": "< €10k",
+        "Stock corrections / Counting / Disposals": "N/A",
+        "Manual Journal posting review": "N/A",
+        "Employment": "N/A",
+    },
+    {
+        "Approver": "Controller / Finance manager",
+        "Purchase agreements": "N/A",
+        "Capex (SharePoint)": "- Within annual budget: < €25k",
+        "Non-PO without contract": "N/A",
+        "Travel & Expenses": "Direct reports",
+        "Quotes & Customer Contracts": "N/A",
+        "Credit Limits / Shipment blocks / Credit notes": "N/A",
+        "Stock corrections / Counting / Disposals": "=> €2.5k < €10k",
+        "Manual Journal posting review": "< €100k EBITDA Impact",
+        "Employment": "N/A",
+    },
 ]
 
-# -------------------------------
-# Role → Person mapping
-# -------------------------------
-MAP_FILE = "approver_people.json"
-default_people = {
-    "Shareholder": "—",
-    "Board": "—",
-    "CEO": "—",
-    "CFO": "—",
-    "CHRO": "—",
-    "Group Finance Director": "—",
-    "Strategy & Supply chain director": "—",
-    "Group Legal": "—",
-    "Vice President Division": "—",
-    "Location Manager": "—",
-    "Sales Director": "—",
-    "Controller / Finance manager": "—",
-    "All Directors": "—",
+# Group → Category list (drives the wizard)
+GROUPS = {
+    "Purchase": ["Purchase agreements", "Capex (SharePoint)", "Non-PO without contract", "Travel & Expenses"],
+    "Sales": ["Quotes & Customer Contracts", "Credit Limits / Shipment blocks / Credit notes"],
+    "Other": ["Stock corrections / Counting / Disposals", "Manual Journal posting review"],
+    "HR": ["Employment"],
 }
 
-def load_people_map() -> Dict[str, str]:
-    try:
-        with open(MAP_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return default_people.copy()
-
-def save_people_map(d: Dict[str, str]):
-    with open(MAP_FILE, "w") as f:
-        json.dump(d, f, indent=2)
-
-people_map = load_people_map()
-
-# -------------------------------
-# Data source: built-in vs CSV upload
-# -------------------------------
-st.sidebar.markdown("### Data Source")
-use_upload = st.sidebar.toggle("Use uploaded CSV (instead of built-in)", value=False)
-
-def df_to_rules(df: pd.DataFrame) -> List[Rule]:
-    req = {"block", "activity", "condition", "approver_role"}
-    if not req.issubset({c.lower() for c in df.columns}):
-        st.error("CSV must include columns: block, activity, condition, approver_role")
-        return []
-    # Normalize column names
-    cols = {c.lower(): c for c in df.columns}
-    rules: List[Rule] = []
-    for _, r in df.iterrows():
-        rules.append(
-            Rule(
-                str(r[cols["block"]]).strip(),
-                str(r[cols["activity"]]).strip(),
-                str(r[cols["condition"]]).strip(),
-                str(r[cols["approver_role"]]).strip(),
-                str(r.get(cols.get("notes", ""), "")).strip() if "notes" in cols else ""
-            )
-        )
-    return rules
-
-rules: List[Rule] = SAMPLE_RULES
-
-if use_upload:
-    upl = st.sidebar.file_uploader("Upload rules CSV", type=["csv"])
-    if upl:
-        try:
-            df_up = pd.read_csv(upl)
-            rules = df_to_rules(df_up) or SAMPLE_RULES
-            st.sidebar.success(f"Loaded {len(rules)} rules from CSV.")
-        except Exception as e:
-            st.sidebar.error(f"Could not read CSV: {e}")
-
-# People mapping editor
+# ---------- Sidebar: role→person mapping (editable) ----------
 st.sidebar.markdown("### Role → Person")
-editable = pd.DataFrame(
-    {"Role": sorted({r.approver_role for r in rules}), "Person": [people_map.get(role, "—") for role in sorted({r.approver_role for r in rules})]}
-)
-edited = st.sidebar.data_editor(editable, key="people_edit", hide_index=True)
-if st.sidebar.button("Save People Map"):
-    people_map = {row["Role"]: row["Person"] for _, row in edited.iterrows()}
-    save_people_map(people_map)
-    st.sidebar.success("Saved.")
+default_people = {
+    "Shareholder": "",
+    "Board": "",
+    "CEO": "",
+    "CFO": "",
+    "CHRO": "",
+    "Group Finance Director": "",
+    "Strategy & Supply chain director": "",
+    "Group Legal": "",
+    "Vice President Division": "",
+    "Location Manager": "",
+    "Sales Director": "",
+    "Controller / Finance manager": "",
+}
+people = {}
+for role in default_people:
+    people[role] = st.sidebar.text_input(role, value=default_people[role], placeholder="Name")
 
-# -------------------------------
-# UI — Wizard
-# -------------------------------
-st.header("Find the Approver")
+st.sidebar.caption("Leave blank if unassigned. Names are shown on results.")
 
-# Step 1: Block
-blocks = sorted({r.block for r in rules})
-block = st.selectbox("Select block", blocks)
+# ---------- Helpers ----------
+def euro_to_number(s: str) -> float | None:
+    """
+    Parse a euro-ish string to float (supports '€', '.', ',', 'k').
+    '€1.000k' -> 1_000_000 ; '€25k' -> 25_000 ; '€10k' -> 10_000
+    Returns None if not parseable.
+    """
+    if s is None:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    s = s.replace("€", "").replace(" ", "")
+    multi = 1.0
+    if s.lower().endswith("k"):
+        multi = 1_000.0
+        s = s[:-1]
+    # European thousands with '.' and decimal ',' — normalize
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s) * multi
+    except Exception:
+        return None
 
-# Step 2: Activity
-activities = sorted({r.activity for r in rules if r.block == block})
-activity = st.selectbox("Select activity", activities)
+_RANGE_PATTERNS = [
+    # "=> €25k < €100k" or ">= €25k < €100k"
+    re.compile(r"[>]=?\s*€?([\d\.,kK]+)\s*<\s*€?([\d\.,kK]+)"),
+    # "< €25k"
+    re.compile(r"<\s*€?([\d\.,kK]+)"),
+    # "=> €100k" or ">= €100k"
+    re.compile(r"[>]=?\s*€?([\d\.,kK]+)"),
+]
 
-# Step 3: Scenario flags (optional but help disambiguate)
-colf1, colf2, colf3 = st.columns(3)
-with colf1:
-    within_budget_opt = st.selectbox("Within annual budget?", ["Unspecified", "Yes", "No"])
-with colf2:
-    outside_normal_opt = st.selectbox("Outside normal course?", ["Unspecified", "Yes", "No"])
-with colf3:
-    company_level = st.selectbox("Company level", ["Unspecified", "Individual", "Group"])
+def extract_ranges(cell: str) -> list[tuple[float|None, float|None]]:
+    """
+    From a cell string, extract numeric ranges as tuples (min, max).
+    None means open-ended. We treat '=> €X' as '≤ X' by policy convention.
+    """
+    if not cell or cell.upper() == "N/A":
+        return []
+    ranges: list[tuple[float|None, float|None]] = []
 
-within_budget = None if within_budget_opt == "Unspecified" else (within_budget_opt == "Yes")
-outside_normal = None if outside_normal_opt == "Unspecified" else (outside_normal_opt == "Yes")
+    # Cells can contain multiple clauses separated by ';'
+    for part in re.split(r"[;•\n]+", cell):
+        part = part.strip()
+        if not part:
+            continue
+        # Unlimited → always match
+        if "Unlimited" in part:
+            ranges.append((None, None))
+            continue
 
-# Step 4: Amount (optional, auto-parsed in €)
-amount_eur = None
-amount_str = st.text_input("Amount (e.g., 25k, 1,000k, 1.5m). Leave blank if not applicable.")
-if amount_str.strip():
-    parsed = _to_eur("€" + amount_str.strip())
-    if parsed is None:
-        st.warning("Could not parse that amount. Examples: 25k, 1000k, 1.5m")
-    else:
-        amount_eur = parsed
-        st.caption(f"Parsed amount: €{parsed:,.0f}")
+        # Match range patterns in order
+        m = _RANGE_PATTERNS[0].search(part)
+        if m:
+            lo = euro_to_number(m.group(1))
+            hi = euro_to_number(m.group(2))
+            if lo is not None or hi is not None:
+                ranges.append((lo, hi))
+            continue
 
-# -------------------------------
-# Match rules
-# -------------------------------
-candidate_rules = [r for r in rules if r.block == block and r.activity == activity]
+        m = _RANGE_PATTERNS[1].search(part)
+        if m:
+            hi = euro_to_number(m.group(1))
+            ranges.append((None, hi))
+            continue
 
-matches: List[Rule] = []
-for r in candidate_rules:
-    lo, hi = parse_range(r.condition)
-    # First filter by amount range (if any), then by flags
-    if amount_matches(amount_eur, (lo, hi)) and flags_match(r.condition, within_budget, outside_normal, company_level if company_level != "Unspecified" else None):
-        matches.append(r)
+        m = _RANGE_PATTERNS[2].search(part)
+        if m:
+            # Interpret '=> €X' as up-to X (≤ X) based on matrix wording
+            hi = euro_to_number(m.group(1))
+            ranges.append((None, hi))
+            continue
 
-# If nothing matched, relax flag constraints and match just by amount
-if not matches:
-    for r in candidate_rules:
-        lo, hi = parse_range(r.condition)
-        if amount_matches(amount_eur, (lo, hi)):
-            matches.append(r)
+    return ranges
 
-# -------------------------------
-# Results
-# -------------------------------
-if not matches:
-    st.error("No approver found for the selected inputs.")
+def amount_matches(ranges: list[tuple[float|None, float|None]], amount: float | None) -> bool:
+    if amount is None:
+        # If user did not provide amount, match any non-N/A cell
+        return len(ranges) > 0
+    if not ranges:
+        return False
+    for lo, hi in ranges:
+        if lo is None and hi is None:
+            return True  # Unlimited
+        if lo is None and hi is not None and amount <= hi + 1e-6:
+            return True
+        if lo is not None and hi is not None and (lo - 1e-6) <= amount <= (hi + 1e-6):
+            return True
+    return False
+
+def condition_matches(cell: str, condition: str) -> bool:
+    if condition == "(Any condition)":
+        return True
+    return condition.lower() in cell.lower()
+
+def build_df() -> pd.DataFrame:
+    return pd.DataFrame(ROWS)
+
+DF = build_df()
+
+# ---------- Wizard UI ----------
+c1, c2, c3 = st.columns([1.2, 1.6, 1.2])
+
+with c1:
+    area = st.selectbox("Area", list(GROUPS.keys()), index=0)
+
+with c2:
+    categories = GROUPS[area]
+    category = st.selectbox("Category", categories, index=0)
+
+with c3:
+    # Collect distinct condition phrases seen in selected category (excluding 'N/A')
+    conds = ["(Any condition)"]
+    for txt in DF[category].tolist():
+        if isinstance(txt, str) and txt.strip() and txt.strip().upper() != "N/A":
+            # Split by ';' to surface sub-clauses as selectable conditions
+            parts = [p.strip() for p in re.split(r"[;]+", txt) if p.strip()]
+            for p in parts:
+                if p not in conds:
+                    conds.append(p)
+    condition = st.selectbox("Condition", conds, index=0)
+
+st.markdown("")
+
+cc1, cc2 = st.columns([1,1])
+with cc1:
+    amount_eur = st.number_input("Amount (€)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
+    amount = None if amount_eur == 0.0 else amount_eur
+with cc2:
+    st.markdown("<span class='small'>Leave amount at 0 to ignore amount filtering.</span>", unsafe_allow_html=True)
+
+st.divider()
+
+# ---------- Matching logic ----------
+results = []
+for _, row in DF.iterrows():
+    cell = str(row[category] or "").strip()
+    if cell.upper() == "N/A" or cell == "":
+        continue
+
+    # Condition filter
+    if not condition_matches(cell, condition):
+        continue
+
+    # Amount filter
+    rngs = extract_ranges(cell)
+    if not amount_matches(rngs, amount):
+        continue
+
+    results.append({
+        "Approving Entity": row["Approver"],
+        "Person": people.get(row["Approver"], "").strip(),
+        "Rule Text": cell,
+    })
+
+# Seniority order (top = higher)
+seniority = [
+    "Shareholder","Board","CEO","CFO","CHRO","Group Finance Director",
+    "Strategy & Supply chain director","Group Legal","Vice President Division",
+    "Location Manager","Sales Director","Controller / Finance manager"
+]
+order_map = {name:i for i,name in enumerate(seniority)}
+results.sort(key=lambda r: order_map.get(r["Approving Entity"], math.inf))
+
+# ---------- Output ----------
+st.markdown(f"### Results for **{area} → {category}**")
+if not results:
+    st.info("No matching approver found with the selected filters. Try loosening the condition or clearing the amount.")
 else:
-    st.subheader("Approver")
-    results = []
-    for r in matches:
-        results.append({
-            "Approver Role": r.approver_role,
-            "Person": people_map.get(r.approver_role, "—"),
-            "Condition": r.condition,
-            "Notes": r.notes
-        })
-    out = pd.DataFrame(results).drop_duplicates()
-    st.dataframe(out, hide_index=True, use_container_width=True)
-    st.markdown(
-        "<p class='small'>If multiple rows appear, your inputs match multiple policy lines—use the most senior or clarify the scenario flags above.</p>",
-        unsafe_allow_html=True
+    out = pd.DataFrame(results)
+    # Show badge with count
+    st.markdown(f"<span class='badge'>{len(out)} match(es)</span>", unsafe_allow_html=True)
+    # Pretty table
+    st.dataframe(out, use_container_width=True)
+
+    # Primary recommendation (top by seniority order)
+    best = results[0]
+    st.markdown("#### Recommended Approver")
+    st.success(
+        f"**{best['Approving Entity']}**"
+        + (f" — {best['Person']}" if best['Person'] else "")
+        + f"\n\nPolicy match: _{best['Rule Text']}_"
     )
 
-# -------------------------------
-# Download / Manage rules
-# -------------------------------
-st.markdown("---")
-st.markdown("### Manage Rules")
-colm1, colm2 = st.columns(2)
-with colm1:
-    if st.button("Download current rules as CSV"):
-        df_rules = pd.DataFrame([r.__dict__ for r in rules])
-        csv_bytes = df_rules.to_csv(index=False).encode("utf-8")
-        st.download_button("Save rules.csv", data=csv_bytes, file_name="rules.csv", mime="text/csv", use_container_width=True)
-with colm2:
-    st.markdown(
-        "<div class='small'>You can upload a CSV on the left sidebar (toggle “Use uploaded CSV”). "
-        "Expected columns: <b>block, activity, condition, approver_role</b> (+ optional <i>notes</i>).</div>",
-        unsafe_allow_html=True
-    )
+st.markdown("<hr/>", unsafe_allow_html=True)
+st.markdown("<div class='small'>© Solidus — Internal tool. Policy owners: Finance & Legal.</div>", unsafe_allow_html=True)

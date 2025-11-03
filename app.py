@@ -1,7 +1,8 @@
-# app.py — Solidus Approver Finder
+# app.py — Solidus Approver Finder (with emails)
 # ------------------------------------------------------------
 import re
 import math
+import unicodedata
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -35,14 +36,12 @@ with head1:
 with head2:
     st.markdown(
         "<h1 style='margin:0; color:#0D4B6A;'>Approver Finder</h1>"
-        "<div class='small'>Find the correct approver based on policy rules. Update role→person in the sidebar.</div>",
+        "<div class='small'>Find the correct approver based on policy rules. Update role→person in the sidebar; emails are generated automatically.</div>",
         unsafe_allow_html=True,
     )
 st.divider()
 
 # ---------- Matrix (embedded) ----------
-# Columns are grouped for clarity. Each row = Approving Entity.
-# Cell text mirrors your matrix (kept deliberately close for auditability).
 ROWS = [
     {
         "Approver": "Shareholder",
@@ -190,7 +189,6 @@ ROWS = [
     },
 ]
 
-# Group → Category list (drives the wizard)
 GROUPS = {
     "Purchase": ["Purchase agreements", "Capex (SharePoint)", "Non-PO without contract", "Travel & Expenses"],
     "Sales": ["Quotes & Customer Contracts", "Credit Limits / Shipment blocks / Credit notes"],
@@ -198,35 +196,75 @@ GROUPS = {
     "HR": ["Employment"],
 }
 
-# ---------- Sidebar: role→person mapping (editable) ----------
-st.sidebar.markdown("### Role → Person")
-default_people = {
+# ---------- Role → Person defaults (from your list) ----------
+DEFAULT_PEOPLE = {
     "Shareholder": "",
-    "Board": "",
-    "CEO": "",
-    "CFO": "",
-    "CHRO": "",
-    "Group Finance Director": "",
-    "Strategy & Supply chain director": "",
-    "Group Legal": "",
-    "Vice President Division": "",
-    "Location Manager": "",
-    "Sales Director": "",
-    "Controller / Finance manager": "",
+    "Board": "Solidus Investment / Board",
+    "CEO": "Niels Flierman",
+    "CFO": "David Kubala",
+    "CHRO": "Erik van Mierlo",
+    "Strategy & Supply chain director": "Robert Egging/Ignacio Aguado",
+    "Group Finance Director": "Hielke Bremer",
+    "Group Legal": "David Kubala",
+    "Vice President Division": "Jan-Willem Kleppers",
+    "Location Manager": "MD (Vacant)",
+    "Sales Director": "Paul Garstang",
+    "Controller / Finance manager": "Tony Noble",
 }
+
+# ---------- Email helpers ----------
+def strip_accents(text: str) -> str:
+    return ''.join(
+        c for c in unicodedata.normalize('NFKD', text)
+        if not unicodedata.combining(c)
+    )
+
+def name_to_email(fullname: str) -> str | None:
+    """
+    Rule: firstname.lastname@solidus.com
+    - Handles hyphenated first names (keeps hyphen)
+    - Removes apostrophes/accents
+    - Ignores extra spaces
+    """
+    fullname = strip_accents(fullname.strip())
+    if not fullname or "vacant" in fullname.lower():
+        return None
+    # Split on spaces; keep hyphenated tokens
+    parts = [p for p in re.split(r"\s+", fullname.replace("'", "")) if p]
+    if len(parts) == 1:
+        return None
+    first = parts[0].lower()
+    last = parts[-1].lower()
+    # Keep hyphens, remove non alnum/-
+    first = re.sub(r"[^a-z0-9\-]", "", first)
+    last  = re.sub(r"[^a-z0-9\-]", "", last)
+    if not first or not last:
+        return None
+    return f"{first}.{last}@solidus.com"
+
+def names_to_emails(name_field: str) -> list[str]:
+    """
+    Supports 'Name1/Name2' lists.
+    """
+    if not name_field:
+        return []
+    emails = []
+    for chunk in [c.strip() for c in re.split(r"[/,&]", name_field) if c.strip()]:
+        e = name_to_email(chunk)
+        if e:
+            emails.append(e)
+    return emails
+
+# ---------- Sidebar: editable names; emails auto-generate ----------
+st.sidebar.markdown("### Role → Person (editable)")
 people = {}
-for role in default_people:
-    people[role] = st.sidebar.text_input(role, value=default_people[role], placeholder="Name")
+for role, default in DEFAULT_PEOPLE.items():
+    people[role] = st.sidebar.text_input(role, value=default, placeholder="Name(s)")
 
-st.sidebar.caption("Leave blank if unassigned. Names are shown on results.")
+st.sidebar.caption("Use '/' to separate multiple names. Emails follow firstname.lastname@solidus.com.")
 
-# ---------- Helpers ----------
+# ---------- Helpers for rule parsing ----------
 def euro_to_number(s: str) -> float | None:
-    """
-    Parse a euro-ish string to float (supports '€', '.', ',', 'k').
-    '€1.000k' -> 1_000_000 ; '€25k' -> 25_000 ; '€10k' -> 10_000
-    Returns None if not parseable.
-    """
     if s is None:
         return None
     s = s.strip()
@@ -237,7 +275,6 @@ def euro_to_number(s: str) -> float | None:
     if s.lower().endswith("k"):
         multi = 1_000.0
         s = s[:-1]
-    # European thousands with '.' and decimal ',' — normalize
     s = s.replace(".", "").replace(",", ".")
     try:
         return float(s) * multi
@@ -245,66 +282,48 @@ def euro_to_number(s: str) -> float | None:
         return None
 
 _RANGE_PATTERNS = [
-    # "=> €25k < €100k" or ">= €25k < €100k"
     re.compile(r"[>]=?\s*€?([\d\.,kK]+)\s*<\s*€?([\d\.,kK]+)"),
-    # "< €25k"
     re.compile(r"<\s*€?([\d\.,kK]+)"),
-    # "=> €100k" or ">= €100k"
     re.compile(r"[>]=?\s*€?([\d\.,kK]+)"),
 ]
 
 def extract_ranges(cell: str) -> list[tuple[float|None, float|None]]:
-    """
-    From a cell string, extract numeric ranges as tuples (min, max).
-    None means open-ended. We treat '=> €X' as '≤ X' by policy convention.
-    """
     if not cell or cell.upper() == "N/A":
         return []
     ranges: list[tuple[float|None, float|None]] = []
-
-    # Cells can contain multiple clauses separated by ';'
     for part in re.split(r"[;•\n]+", cell):
         part = part.strip()
         if not part:
             continue
-        # Unlimited → always match
         if "Unlimited" in part:
             ranges.append((None, None))
             continue
-
-        # Match range patterns in order
         m = _RANGE_PATTERNS[0].search(part)
         if m:
             lo = euro_to_number(m.group(1))
             hi = euro_to_number(m.group(2))
-            if lo is not None or hi is not None:
-                ranges.append((lo, hi))
+            ranges.append((lo, hi))
             continue
-
         m = _RANGE_PATTERNS[1].search(part)
         if m:
             hi = euro_to_number(m.group(1))
             ranges.append((None, hi))
             continue
-
         m = _RANGE_PATTERNS[2].search(part)
         if m:
-            # Interpret '=> €X' as up-to X (≤ X) based on matrix wording
             hi = euro_to_number(m.group(1))
             ranges.append((None, hi))
             continue
-
     return ranges
 
 def amount_matches(ranges: list[tuple[float|None, float|None]], amount: float | None) -> bool:
     if amount is None:
-        # If user did not provide amount, match any non-N/A cell
         return len(ranges) > 0
     if not ranges:
         return False
     for lo, hi in ranges:
         if lo is None and hi is None:
-            return True  # Unlimited
+            return True
         if lo is None and hi is not None and amount <= hi + 1e-6:
             return True
         if lo is not None and hi is not None and (lo - 1e-6) <= amount <= (hi + 1e-6):
@@ -316,10 +335,7 @@ def condition_matches(cell: str, condition: str) -> bool:
         return True
     return condition.lower() in cell.lower()
 
-def build_df() -> pd.DataFrame:
-    return pd.DataFrame(ROWS)
-
-DF = build_df()
+DF = pd.DataFrame(ROWS)
 
 # ---------- Wizard UI ----------
 c1, c2, c3 = st.columns([1.2, 1.6, 1.2])
@@ -332,11 +348,9 @@ with c2:
     category = st.selectbox("Category", categories, index=0)
 
 with c3:
-    # Collect distinct condition phrases seen in selected category (excluding 'N/A')
     conds = ["(Any condition)"]
     for txt in DF[category].tolist():
         if isinstance(txt, str) and txt.strip() and txt.strip().upper() != "N/A":
-            # Split by ';' to surface sub-clauses as selectable conditions
             parts = [p.strip() for p in re.split(r"[;]+", txt) if p.strip()]
             for p in parts:
                 if p not in conds:
@@ -344,7 +358,6 @@ with c3:
     condition = st.selectbox("Condition", conds, index=0)
 
 st.markdown("")
-
 cc1, cc2 = st.columns([1,1])
 with cc1:
     amount_eur = st.number_input("Amount (€)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
@@ -354,29 +367,29 @@ with cc2:
 
 st.divider()
 
-# ---------- Matching logic ----------
+# ---------- Matching ----------
 results = []
 for _, row in DF.iterrows():
     cell = str(row[category] or "").strip()
     if cell.upper() == "N/A" or cell == "":
         continue
-
-    # Condition filter
     if not condition_matches(cell, condition):
         continue
-
-    # Amount filter
     rngs = extract_ranges(cell)
     if not amount_matches(rngs, amount):
         continue
 
+    role = row["Approver"]
+    name_field = people.get(role, "")
+    emails = names_to_emails(name_field)
     results.append({
-        "Approving Entity": row["Approver"],
-        "Person": people.get(row["Approver"], "").strip(),
+        "Approving Entity": role,
+        "Person(s)": name_field,
+        "Email(s)": ", ".join(emails),
         "Rule Text": cell,
     })
 
-# Seniority order (top = higher)
+# Seniority for tie-breaking
 seniority = [
     "Shareholder","Board","CEO","CFO","CHRO","Group Finance Director",
     "Strategy & Supply chain director","Group Legal","Vice President Division",
@@ -391,18 +404,15 @@ if not results:
     st.info("No matching approver found with the selected filters. Try loosening the condition or clearing the amount.")
 else:
     out = pd.DataFrame(results)
-    # Show badge with count
     st.markdown(f"<span class='badge'>{len(out)} match(es)</span>", unsafe_allow_html=True)
-    # Pretty table
     st.dataframe(out, use_container_width=True)
 
-    # Primary recommendation (top by seniority order)
     best = results[0]
     st.markdown("#### Recommended Approver")
+    email_note = f" — {best['Email(s)']}" if best["Email(s)"] else ""
+    person_note = f" ({best['Person(s)']})" if best["Person(s)"] else ""
     st.success(
-        f"**{best['Approving Entity']}**"
-        + (f" — {best['Person']}" if best['Person'] else "")
-        + f"\n\nPolicy match: _{best['Rule Text']}_"
+        f"**{best['Approving Entity']}**{person_note}{email_note}\n\nPolicy match: _{best['Rule Text']}_"
     )
 
 st.markdown("<hr/>", unsafe_allow_html=True)

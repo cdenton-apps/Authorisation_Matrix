@@ -34,11 +34,6 @@ with left:
         st.image(logo, use_column_width=True)
     except Exception:
         st.write("")
-    try:
-        logo = Image.open("assets/solidus_logo.png")
-        st.image(logo, use_column_width=True)  # wide logo retained
-    except Exception:
-        st.write("")
 
 with right:
     st.markdown("<h1>Solidus Approval Finder</h1>", unsafe_allow_html=True)

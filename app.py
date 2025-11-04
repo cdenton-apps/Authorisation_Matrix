@@ -360,7 +360,3 @@ else:
         "<code>approvers.csv</code></div>",
         unsafe_allow_html=True,
     )
-
-st.divider()
-st.markdown(
-)

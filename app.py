@@ -38,7 +38,7 @@ with left:
 with right:
     st.markdown("<h1>Solidus Approval Finder</h1>", unsafe_allow_html=True)
     st.caption("Select the area and context to identify the correct approving entity. "
-               "If multiple approvers qualify, recommend the **lowest level** first.")
+               "If multiple approvers qualify, this app will recommend one result and give alternatives.")
 
 st.divider()
 

@@ -357,14 +357,10 @@ else:
 
     st.markdown(
         "<div class='smallgray'>Roles, names, and thresholds are maintained in "
-        "<code>approvers.csv</code> (columns: <b>Role, Person</b>). "
-        "If the file is absent, built-in defaults are used.</div>",
+        "<code>approvers.csv</code></div>",
         unsafe_allow_html=True,
     )
 
 st.divider()
 st.markdown(
-    "<div class='smallgray'>Email format enforced as <b>firstname.lastname@solidus.com</b> "
-    "(hyphens kept; middle names ignored).</div>",
-    unsafe_allow_html=True,
 )

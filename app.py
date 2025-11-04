@@ -69,25 +69,26 @@ people_df = get_people_df()
 
 with st.sidebar:
     st.subheader("Approver contacts")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button(
-            "Export CSV",
-            data=people_df.to_csv(index=False).encode("utf-8"),
-            file_name="approver_contacts.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    with c2:
-        up = st.file_uploader("Import CSV", type=["csv"], label_visibility="collapsed")
-        if up is not None:
-            try:
-                new_df = pd.read_csv(up).fillna("")
-                assert {"Role","Person","Email"} <= set(new_df.columns)
-                people_df = new_df[["Role","Person","Email"]].copy()
-                st.success("Contacts updated for this session.")
-            except Exception as e:
-                st.error(f"Could not import: {e}")
+
+    # full-width export button
+    st.download_button(
+        "Export CSV",
+        data=people_df.to_csv(index=False).encode("utf-8"),
+        file_name="approver_contacts.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+    # full-width uploader
+    up = st.file_uploader("Import CSV", type=["csv"])
+    if up is not None:
+        try:
+            new_df = pd.read_csv(up).fillna("")
+            assert {"Role","Person","Email"} <= set(new_df.columns)
+            people_df = new_df[["Role","Person","Email"]].copy()
+            st.success("Contacts updated for this session.")
+        except Exception as e:
+            st.error(f"Could not import: {e}")
 
 def person_of(role: str) -> tuple[str, str]:
     row = people_df.loc[people_df["Role"].str.lower()==role.lower()]

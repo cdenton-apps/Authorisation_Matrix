@@ -1,13 +1,11 @@
-# app.py — Solidus Approvals Finder (matrix wizard)
+# app.py —
 
 import re
 import math
 import streamlit as st
 from PIL import Image
 
-# -----------------------------
-# Page setup & branding
-# -----------------------------
+# --- setup
 st.set_page_config(page_title="Solidus Approvals Finder", layout="wide")
 
 hide = """
@@ -39,9 +37,7 @@ with right:
 
 st.divider()
 
-# -----------------------------
-# People in roles (easy to edit)
-# -----------------------------
+# ---  roles
 ROLE_PEOPLE = {
     "Shareholder": "",
     "Solidus Investment / Board": "Board members",
@@ -78,9 +74,7 @@ def to_emails(name: str) -> list[str]:
         emails.append(f"{first_last}@solidus.com")
     return emails
 
-# -----------------------------
-# Rules (short, practical mapping)
-# -----------------------------
+# --- rules, mapping
 EUR = "€"
 
 # Helper to display amount nicely
@@ -201,16 +195,14 @@ def hr_employment_rules(salary: float, bonus: float, is_board_member: bool) -> l
     # otherwise multiple roles can sign; list lowest level first
     return ["Vice President Division", "CHRO", "CFO"]
 
-# -----------------------------
-# Wizard
-# -----------------------------
+# --- wizard
 st.subheader("1) Choose area")
 area = st.selectbox(
     "Area",
     ["Purchase", "Sales", "Other", "HR"],
 )
 
-# The user journey splits here, only asking for relevant inputs.
+# --- user journey split
 result_roles: list[str] = []
 extra_notes: list[str] = []
 
@@ -278,9 +270,7 @@ else:  # HR
 
 st.divider()
 
-# -----------------------------
-# Output results
-# -----------------------------
+# --- output
 st.subheader("2) Approver(s)")
 
 if not result_roles:

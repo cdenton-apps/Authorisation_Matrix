@@ -1,4 +1,4 @@
-# app.py — Solidus Approval Finder
+# --  app.py
 # Fixes:
 #  - Corrected logic for Sales, Other, HR to match matrix.
 #  - Contacts CSV import/export moved to sidebar.
@@ -9,9 +9,7 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 
-# ─────────────────────────────────────────────────────────────
-# Page config & branding
-# ─────────────────────────────────────────────────────────────
+# -- Page config & branding
 st.set_page_config(page_title="Solidus Approval Finder", layout="wide")
 
 HIDE = """
@@ -51,9 +49,8 @@ with right:
 
 st.divider()
 
-# ─────────────────────────────────────────────────────────────
-# Sidebar: Role → Person mapping (CSV import/export)
-# ─────────────────────────────────────────────────────────────
+# --   Sidebar: Role to Person mapping (CSV import/export)
+
 DEFAULT_PEOPLE = pd.DataFrame([
     {"Role": "Shareholder",                    "Person": "",                      "Email": ""},
     {"Role": "Solidus Investment / Board",     "Person": "Board members",         "Email": "board.members@solidus.com"},
@@ -108,9 +105,7 @@ def mailto(email: str, label: str|None=None) -> str:
         return "<span class='small'>No email on file</span>"
     return f"<a class='mail' href='mailto:{email}'>{label or email}</a>"
 
-# ─────────────────────────────────────────────────────────────
-# Input step (unchanged default-empty behaviour)
-# ─────────────────────────────────────────────────────────────
+# ---   Input step (default empty)
 st.markdown("### 1) Choose area")
 
 area = st.selectbox(

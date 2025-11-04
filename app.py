@@ -1,11 +1,11 @@
-# app.py — Solidus Approvals Finder (with Recommended badge + Alternative table)
+# app.py — Solidus Approvals Finder (Recommended badge + strict alternatives + clickable emails)
 
 import re
 import streamlit as st
 from PIL import Image
 
 # -----------------------------
-# Page + simple styling
+# Page + styling
 # -----------------------------
 st.set_page_config(page_title="Solidus Approvals Finder", layout="wide")
 st.markdown(
@@ -23,15 +23,14 @@ st.markdown(
 )
 
 # -----------------------------
-# Header (previous arrangement)
+# Header (logo left, title right)
 # -----------------------------
 left, right = st.columns([1, 3], gap="large")
 with left:
     try:
-        st.image("assets/solidus_logo.png", width=260)  # wide/bigger
+        st.image("assets/solidus_logo.png", width=260)
     except Exception:
         st.write(" ")
-
 with right:
     st.markdown(
         "<h1 style='color:#0D4B6A;margin:.2rem 0 .4rem 0'>Solidus Approvals Finder</h1>",
@@ -39,14 +38,14 @@ with right:
     )
     st.markdown(
         "<div class='smallgray'>Answer the minimum required questions. "
-        "We’ll show the recommended approver(s) and also list alternatives (higher or backup roles).</div>",
+        "We’ll show the recommended approver(s) and a higher-level alternative list.</div>",
         unsafe_allow_html=True,
     )
 
 st.divider()
 
 # -----------------------------
-# People per role (editable)
+# Role → person (editable)
 # -----------------------------
 ROLE_PEOPLE = {
     "Shareholder": "",
@@ -63,8 +62,7 @@ ROLE_PEOPLE = {
     "Controller / Finance manager": "Tony Noble",
 }
 
-def to_emails(name: str) -> list[str]:
-    """firstname.lastname@solidus.com, supports 'A/B' etc."""
+def names_to_emails(name: str) -> list[str]:
     if not name or "vacant" in name.lower():
         return []
     parts = re.split(r"[\/,]| and ", name, flags=re.I)
@@ -73,20 +71,23 @@ def to_emails(name: str) -> list[str]:
         p = p.strip()
         if not p:
             continue
-        p = re.sub(r"\(.*?\)", "", p).strip()
-        p = re.sub(r"[^A-Za-z\\-\\s]", "", p)
+        p = re.sub(r"\(.*?\)", "", p).strip()         # remove (notes)
+        p = re.sub(r"[^A-Za-z\\-\\s]", "", p)         # letters, hyphen, space
         p = re.sub(r"\s+", " ", p).strip().lower()
         if not p:
             continue
         out.append(p.replace(" ", ".") + "@solidus.com")
     return out
 
+def mailto_md(emails: list[str]) -> str:
+    if not emails:
+        return "—"
+    return ", ".join([f"[{e}](mailto:{e})" for e in emails])
+
 # -----------------------------
 # Rule helpers
 # -----------------------------
-def purchase_contract_rules(amount: float, in_normal_course: bool) -> list[str]:
-    roles: list[str] = []
-    # base ladder (lowest → highest)
+def purchase_contract_rules(amount: float, in_normal_course: bool):
     ladder = [
         "Location Director",
         "Group Finance Director",
@@ -94,7 +95,9 @@ def purchase_contract_rules(amount: float, in_normal_course: bool) -> list[str]:
         "Strategy & Supply chain director",
         "CEO",
         "Solidus Investment / Board",
+        "Group Legal",   # legal review is always required for contracts (kept at end)
     ]
+    roles = []
     if not in_normal_course and amount >= 1_000_000:
         roles.append("Solidus Investment / Board")
     if amount < 100_000:
@@ -105,11 +108,10 @@ def purchase_contract_rules(amount: float, in_normal_course: bool) -> list[str]:
         roles.append("Strategy & Supply chain director")
     else:
         roles.append("CEO")
-    # Legal always
     roles.append("Group Legal")
-    return roles, ladder + ["Group Legal"]
+    return roles, ladder
 
-def purchase_nonpo_rules(amount: float) -> tuple[list[str], list[str]]:
+def purchase_nonpo_rules(amount: float):
     ladder = ["Location Director", "Vice President Division", "CFO"]
     if amount < 25_000:
         return (["Location Director"], ladder)
@@ -118,7 +120,7 @@ def purchase_nonpo_rules(amount: float) -> tuple[list[str], list[str]]:
     else:
         return (["CFO"], ladder)
 
-def capex_rules(amount: float, within_budget: bool, scope: str) -> tuple[list[str], list[str]]:
+def capex_rules(amount: float, within_budget: bool, scope: str):
     ladder = [
         "Controller / Finance manager",
         "Group Finance Director",
@@ -126,7 +128,7 @@ def capex_rules(amount: float, within_budget: bool, scope: str) -> tuple[list[st
         "CEO",
         "Solidus Investment / Board",
     ]
-    roles: list[str] = []
+    roles = []
     if within_budget:
         if amount < 25_000:
             roles.append("Controller / Finance manager")
@@ -142,14 +144,14 @@ def capex_rules(amount: float, within_budget: bool, scope: str) -> tuple[list[st
                 roles.append("CEO")
             else:
                 roles.append("CEO")
-        else:  # Group basis
+        else:  # Group
             if amount < 750_000:
                 roles.append("CEO")
             else:
                 roles.append("Solidus Investment / Board")
     return roles, ladder
 
-def sales_quotes_rules(amount: float) -> tuple[list[str], list[str]]:
+def sales_quotes_rules(amount: float):
     ladder = ["Location Director", "Sales Director", "Vice President Division", "CEO"]
     if amount < 25_000:
         return (["Location Director", "Sales Director"], ladder)
@@ -158,7 +160,7 @@ def sales_quotes_rules(amount: float) -> tuple[list[str], list[str]]:
     else:
         return (["CEO"], ladder)
 
-def sales_credit_rules(amount: float) -> tuple[list[str], list[str]]:
+def sales_credit_rules(amount: float):
     ladder = ["Sales Director", "Location Director", "Vice President Division", "CFO"]
     if amount < 10_000:
         return (["Sales Director"], ladder)
@@ -169,7 +171,7 @@ def sales_credit_rules(amount: float) -> tuple[list[str], list[str]]:
     else:
         return (["CFO"], ladder)
 
-def other_stock_rules(amount: float) -> tuple[list[str], list[str]]:
+def other_stock_rules(amount: float):
     ladder = ["Location Director", "Controller / Finance manager", "Vice President Division", "CFO"]
     if amount < 2_500:
         return ([], ladder)
@@ -182,14 +184,14 @@ def other_stock_rules(amount: float) -> tuple[list[str], list[str]]:
     else:
         return (["CFO"], ladder)
 
-def other_manual_journal_rules(impact: float) -> tuple[list[str], list[str]]:
+def other_manual_journal_rules(impact: float):
     ladder = ["Controller / Finance manager", "Group Finance Director"]
     if abs(impact) < 100_000:
         return (["Controller / Finance manager"], ladder)
     else:
         return (["Group Finance Director"], ladder)
 
-def hr_employment_rules(salary: float, bonus: float, is_board_member: bool) -> tuple[list[str], list[str]]:
+def hr_employment_rules(salary: float, bonus: float, is_board_member: bool):
     ladder = ["Vice President Division", "CHRO", "CFO", "CEO", "Solidus Investment / Board"]
     if is_board_member:
         return (["Solidus Investment / Board"], ladder)
@@ -198,14 +200,12 @@ def hr_employment_rules(salary: float, bonus: float, is_board_member: bool) -> t
     return (["Vice President Division", "CHRO", "CFO"], ladder)
 
 # -----------------------------
-# Wizard (same flow as before)
+# Wizard
 # -----------------------------
 st.subheader("1) Choose area")
 area = st.selectbox("Area", ["Purchase", "Sales", "Other", "HR"])
 
-recommended: list[str] = []
-ladder: list[str] = []
-notes: list[str] = []
+recommended, ladder, notes = [], [], []
 
 if area == "Purchase":
     sub = st.selectbox("Type", ["Purchase (contract) agreements", "(non) PO-purchases without a contract", "Capital / Capex"])
@@ -217,7 +217,6 @@ if area == "Purchase":
             recommended, ladder = purchase_contract_rules(amount, in_course)
             if not in_course and amount >= 1_000_000:
                 notes.append("Outside normal course ≥ €1,000k requires Board approval.")
-            notes.append("Group Legal review is required for contracts.")
 
     elif sub == "(non) PO-purchases without a contract":
         amount = st.number_input("Amount (€)", min_value=0.0, step=500.0, format="%.0f")
@@ -257,25 +256,24 @@ else:  # HR
 st.divider()
 
 # -----------------------------
-# Output — Recommended + Alternatives
+# Output — Recommended + Strict Alternatives
 # -----------------------------
 st.subheader("2) Approver(s)")
 
 if not recommended:
     st.info("Provide the required inputs above to see approvers.")
 else:
-    # De-dupe and keep order
+    # Keep order, dedupe
     seen = set()
-    rec_clean = []
+    rec = []
     for r in recommended:
         if r not in seen:
-            rec_clean.append(r)
-            seen.add(r)
+            rec.append(r); seen.add(r)
 
-    # Show recommended cards (like before, but badge text updated)
-    for idx, role in enumerate(rec_clean, start=1):
+    # Recommended cards (with clickable emails)
+    for idx, role in enumerate(rec, start=1):
         person = ROLE_PEOPLE.get(role, "")
-        emails = ", ".join(to_emails(person)) or "—"
+        emails = mailto_md(names_to_emails(person))
         st.markdown(
             f"<div class='note'><span class='role'>{idx}. {role}</span>"
             f"<span class='pill'>Recommended</span><br>"
@@ -284,17 +282,21 @@ else:
             unsafe_allow_html=True,
         )
 
-    # Alternatives = ladder minus recommended (keep order)
-    alt = [r for r in ladder if r not in rec_clean]
+    # Strict alternatives: only roles above the highest recommended in the ladder
+    # find highest index among recommended present in ladder
+    ladder_pos = {r:i for i,r in enumerate(ladder)}
+    highest_idx = max([ladder_pos.get(r, -1) for r in rec]) if rec else -1
+    alt = [r for i, r in enumerate(ladder) if i > highest_idx and r not in rec]
+
     if alt:
-        st.markdown("**Alternative approvers (higher or backup):**")
-        # Build simple table
-        rows = []
+        # Markdown table so links are clickable
+        md_lines = ["| Role | Current person | Email |", "|---|---|---|"]
         for r in alt:
-            person = ROLE_PEOPLE.get(r, "")
-            email = ", ".join(to_emails(person)) or "—"
-            rows.append({"Role": r, "Current person": person or "—", "Email": email})
-        st.table(rows)
+            person = ROLE_PEOPLE.get(r, "") or "—"
+            emails = mailto_md(names_to_emails(ROLE_PEOPLE.get(r, "")))
+            md_lines.append(f"| {r} | {person} | {emails} |")
+        st.markdown("**Alternative approvers (higher level):**")
+        st.markdown("\n".join(md_lines), unsafe_allow_html=True)
 
     if notes:
         st.markdown("**Notes:**")
@@ -303,6 +305,6 @@ else:
 
 st.divider()
 st.markdown(
-    "<div class='smallgray'>Role → person and thresholds are defined in the file and can be updated easily.</div>",
+    "<div class='smallgray'>Roles, names, and thresholds are defined in this file — update easily as people change.</div>",
     unsafe_allow_html=True,
 )

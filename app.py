@@ -1,8 +1,10 @@
-# app.py — Solidus Approvals Finder (Recommended badge + strict alternatives + clickable emails)
+# app.py — Solidus Approvals Finder (CSV loader + firstname.lastname emails)
 
+import os
 import re
 import streamlit as st
 from PIL import Image
+import pandas as pd
 
 # -----------------------------
 # Page + styling
@@ -23,7 +25,7 @@ st.markdown(
 )
 
 # -----------------------------
-# Header (logo left, title right)
+# Header
 # -----------------------------
 left, right = st.columns([1, 3], gap="large")
 with left:
@@ -45,9 +47,9 @@ with right:
 st.divider()
 
 # -----------------------------
-# Role → person (editable)
+# Default role → person map (used if CSV not supplied)
 # -----------------------------
-ROLE_PEOPLE = {
+DEFAULT_ROLE_PEOPLE = {
     "Shareholder": "",
     "Solidus Investment / Board": "Board members",
     "CEO": "Niels Flierman",
@@ -62,22 +64,81 @@ ROLE_PEOPLE = {
     "Controller / Finance manager": "Tony Noble",
 }
 
-def names_to_emails(name: str) -> list[str]:
-    if not name or "vacant" in name.lower():
+CSV_PATH = "approvers.csv"  # optional file with columns: Role, Person
+
+def load_people_mapping() -> dict:
+    """
+    Tiny loader:
+    - If approvers.csv exists, read it (columns: Role, Person)
+    - Normalize role keys to match our dictionary keys
+    - Override defaults with CSV values (blank allowed)
+    """
+    mapping = DEFAULT_ROLE_PEOPLE.copy()
+    if os.path.exists(CSV_PATH):
+        try:
+            df = pd.read_csv(CSV_PATH)
+            # Accept flexible casing/spacing
+            cols = {c.lower().strip(): c for c in df.columns}
+            role_col = cols.get("role")
+            person_col = cols.get("person")
+            if role_col and person_col:
+                for _, row in df.iterrows():
+                    role = str(row[role_col]).strip()
+                    person = "" if pd.isna(row[person_col]) else str(row[person_col]).strip()
+                    if role:
+                        mapping[role] = person
+        except Exception:
+            pass
+    return mapping
+
+ROLE_PEOPLE = load_people_mapping()
+
+# -----------------------------
+# Email helpers
+# -----------------------------
+def _clean_token(token: str) -> str:
+    # keep letters + hyphen (remove accents/others by stripping non-ascii letters)
+    token = token.lower()
+    token = re.sub(r"[^\w\- ]", "", token, flags=re.I)  # remove punctuation except hyphen/underscore
+    token = token.replace("_", "")                      # drop underscores
+    token = re.sub(r"\s+", " ", token).strip()
+    return token
+
+def _first_last(name: str) -> tuple[str, str] | None:
+    """
+    Return (first, last) tokens from a full name.
+    Handles multi-part names by taking first token and last token.
+    Keeps hyphens inside tokens.
+    """
+    if not name:
+        return None
+    name = re.sub(r"\(.*?\)", "", name)  # remove (notes)
+    tokens = [_clean_token(t) for t in name.split() if t.strip()]
+    if len(tokens) < 2:
+        return None
+    return tokens[0], tokens[-1]
+
+def names_to_emails(person_field: str) -> list[str]:
+    """
+    Convert "A B / C D" → ["a.b@solidus.com", "c.d@solidus.com"]
+    Uses strictly firstname.lastname (single dot).
+    """
+    if not person_field or "vacant" in person_field.lower():
         return []
-    parts = re.split(r"[\/,]| and ", name, flags=re.I)
-    out = []
+    parts = re.split(r"[\/,]| and ", person_field, flags=re.I)
+    emails = []
     for p in parts:
         p = p.strip()
-        if not p:
+        fl = _first_last(p)
+        if not fl:
             continue
-        p = re.sub(r"\(.*?\)", "", p).strip()         # remove (notes)
-        p = re.sub(r"[^A-Za-z\\-\\s]", "", p)         # letters, hyphen, space
-        p = re.sub(r"\s+", " ", p).strip().lower()
-        if not p:
-            continue
-        out.append(p.replace(" ", ".") + "@solidus.com")
-    return out
+        first, last = fl
+        # Remove non-letters from ends again (safety), keep hyphens
+        first = re.sub(r"[^a-z\-]", "", first)
+        last  = re.sub(r"[^a-z\-]", "", last)
+        if first and last:
+            emails.append(f"{first}.{last}@solidus.com")
+    return emails
 
 def mailto_md(emails: list[str]) -> str:
     if not emails:
@@ -85,7 +146,7 @@ def mailto_md(emails: list[str]) -> str:
     return ", ".join([f"[{e}](mailto:{e})" for e in emails])
 
 # -----------------------------
-# Rule helpers
+# Rules (same logic as before)
 # -----------------------------
 def purchase_contract_rules(amount: float, in_normal_course: bool):
     ladder = [
@@ -95,7 +156,7 @@ def purchase_contract_rules(amount: float, in_normal_course: bool):
         "Strategy & Supply chain director",
         "CEO",
         "Solidus Investment / Board",
-        "Group Legal",   # legal review is always required for contracts (kept at end)
+        "Group Legal",
     ]
     roles = []
     if not in_normal_course and amount >= 1_000_000:
@@ -144,7 +205,7 @@ def capex_rules(amount: float, within_budget: bool, scope: str):
                 roles.append("CEO")
             else:
                 roles.append("CEO")
-        else:  # Group
+        else:
             if amount < 750_000:
                 roles.append("CEO")
             else:
@@ -256,21 +317,19 @@ else:  # HR
 st.divider()
 
 # -----------------------------
-# Output — Recommended + Strict Alternatives
+# Output
 # -----------------------------
 st.subheader("2) Approver(s)")
 
 if not recommended:
     st.info("Provide the required inputs above to see approvers.")
 else:
-    # Keep order, dedupe
     seen = set()
     rec = []
     for r in recommended:
         if r not in seen:
             rec.append(r); seen.add(r)
 
-    # Recommended cards (with clickable emails)
     for idx, role in enumerate(rec, start=1):
         person = ROLE_PEOPLE.get(role, "")
         emails = mailto_md(names_to_emails(person))
@@ -282,14 +341,12 @@ else:
             unsafe_allow_html=True,
         )
 
-    # Strict alternatives: only roles above the highest recommended in the ladder
-    # find highest index among recommended present in ladder
+    # Strict alternatives: roles ABOVE the highest recommended in the ladder
     ladder_pos = {r:i for i,r in enumerate(ladder)}
     highest_idx = max([ladder_pos.get(r, -1) for r in rec]) if rec else -1
     alt = [r for i, r in enumerate(ladder) if i > highest_idx and r not in rec]
 
     if alt:
-        # Markdown table so links are clickable
         md_lines = ["| Role | Current person | Email |", "|---|---|---|"]
         for r in alt:
             person = ROLE_PEOPLE.get(r, "") or "—"
@@ -298,13 +355,16 @@ else:
         st.markdown("**Alternative approvers (higher level):**")
         st.markdown("\n".join(md_lines), unsafe_allow_html=True)
 
-    if notes:
-        st.markdown("**Notes:**")
-        for n in notes:
-            st.markdown(f"- {n}")
+    st.markdown(
+        "<div class='smallgray'>Roles, names, and thresholds are maintained in "
+        "<code>approvers.csv</code> (columns: <b>Role, Person</b>). "
+        "If the file is absent, built-in defaults are used.</div>",
+        unsafe_allow_html=True,
+    )
 
 st.divider()
 st.markdown(
-    "<div class='smallgray'>Roles, names, and thresholds are defined in this file — update easily as people change.</div>",
+    "<div class='smallgray'>Email format enforced as <b>firstname.lastname@solidus.com</b> "
+    "(hyphens kept; middle names ignored).</div>",
     unsafe_allow_html=True,
 )

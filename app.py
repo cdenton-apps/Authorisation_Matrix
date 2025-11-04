@@ -19,7 +19,7 @@ footer {visibility: hidden;}
 .small {color:#6b7280;}
 a.mail {text-decoration:none;}
 
-/* --- fix sidebar uploader overflow --- */
+/* --- sidebar uploader overflow --- */
 [data-testid="stSidebar"] {min-width: 280px; max-width: 320px; overflow:auto;}
 [data-testid="stSidebar"] button {width:100%;}
 /* Ensure the dropzone stays inside the sidebar width */
@@ -44,7 +44,7 @@ with right:
 
 st.divider()
 
-# --   Sidebar: Role to Person mapping (CSV import/export)
+# --   Sidebar: Role to Person
 
 DEFAULT_PEOPLE = pd.DataFrame([
     {"Role": "Shareholder",                    "Person": "",                      "Email": ""},

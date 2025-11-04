@@ -29,6 +29,12 @@ st.markdown(HIDE, unsafe_allow_html=True)
 left, right = st.columns([1, 3], gap="large")
 with left:
     try:
+        st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)  # spacer to prevent visual clipping
+        logo = Image.open("assets/solidus_logo.png")
+        st.image(logo, use_column_width=True)
+    except Exception:
+        st.write("")
+    try:
         logo = Image.open("assets/solidus_logo.png")
         st.image(logo, use_column_width=True)  # wide logo retained
     except Exception:

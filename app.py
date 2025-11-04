@@ -314,7 +314,7 @@ else:
 st.divider()
 
 st.markdown(
-    "<div class='smallgray'>Clarifications, guidelines & definitions are embedded in this wizard. "
-    "Values/ranges and role-to-person mappings can be edited at the top of the file.</div>",
+    "<div class='smallgray'>- "
+    "-</div>",
     unsafe_allow_html=True,
 )

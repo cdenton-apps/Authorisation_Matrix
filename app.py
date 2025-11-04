@@ -1,13 +1,11 @@
-# app.py — Solidus Approvals Finder (mailto fix + CSV import/export + blank start)
+# -- app.py
 
 import os, re
 import streamlit as st
 from PIL import Image
 import pandas as pd
 
-# -----------------------------
-# Page + styling
-# -----------------------------
+# -- page style
 st.set_page_config(page_title="Solidus Approvals Finder", layout="wide")
 st.markdown(
     """
@@ -23,9 +21,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# Header
-# -----------------------------
+# --  header
 left, right = st.columns([1, 3], gap="large")
 with left:
     try:
@@ -45,9 +41,7 @@ with right:
 
 st.divider()
 
-# -----------------------------
-# Defaults (used if CSV not supplied)
-# -----------------------------
+# -- default roles
 DEFAULT_ROLE_PEOPLE = {
     "Shareholder": "",
     "Solidus Investment / Board": "Board members",
@@ -63,9 +57,7 @@ DEFAULT_ROLE_PEOPLE = {
     "Controller / Finance manager": "Tony Noble",
 }
 
-# -----------------------------
-# Sidebar: CSV import/export
-# -----------------------------
+# --   csv import for amending roles
 st.sidebar.subheader("Approver people (CSV)")
 st.sidebar.caption("Columns required: **Role, Person**")
 
@@ -103,9 +95,7 @@ st.sidebar.download_button(
     mime="text/csv",
 )
 
-# -----------------------------
-# Email helpers (HTML anchors)
-# -----------------------------
+# --  email html (mailto) anchors
 def _clean_token(token: str) -> str:
     token = token.lower()
     token = re.sub(r"[^\w\- ]", "", token, flags=re.I)
@@ -144,9 +134,7 @@ def mailto_html(emails: list[str]) -> str:
         return "—"
     return ", ".join([f"<a href='mailto:{e}'>{e}</a>" for e in emails])
 
-# -----------------------------
-# Rules (same as before)
-# -----------------------------
+# --- rules
 def purchase_contract_rules(amount: float, in_normal_course: bool):
     ladder = [
         "Location Director",
@@ -259,9 +247,7 @@ def hr_employment_rules(salary: float, bonus: float, is_board_member: bool):
         return (["CEO"], ladder)
     return (["Vice President Division", "CHRO", "CFO"], ladder)
 
-# -----------------------------
-# Wizard — all blank by default
-# -----------------------------
+# --- wizard/entry
 st.subheader("1) Choose area")
 area = st.selectbox("Area", ["— Select —", "Purchase", "Sales", "Other", "HR"], index=0)
 recommended, ladder, notes = [], [], []
@@ -321,9 +307,7 @@ elif area == "HR":
 
 st.divider()
 
-# -----------------------------
-# Output
-# -----------------------------
+# ---   output
 st.subheader("2) Approver(s)")
 
 if not recommended:
@@ -346,7 +330,7 @@ else:
             unsafe_allow_html=True,
         )
 
-    # Alternatives: strictly higher than highest recommended in ladder order
+    # --- Alternatives
     ladder_pos = {r:i for i,r in enumerate(ladder)}
     highest_idx = max([ladder_pos.get(r, -1) for r in rec]) if rec else -1
     alt = [r for i, r in enumerate(ladder) if i > highest_idx and r not in rec]

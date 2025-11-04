@@ -1,16 +1,11 @@
 # --  app.py
-# Fixes:
-#  - Corrected logic for Sales, Other, HR to match matrix.
-#  - Contacts CSV import/export moved to sidebar.
-#  - Added Group Legal note for Purchase (contract) agreements.
-# Everything else unchanged (branding, mailto, Recommended badge, CSV flow, default empty step, Capex ≥ €1,000,000 → Board).
 
 import streamlit as st
 import pandas as pd
 from PIL import Image
 
 # -- Page config & branding
-st.set_page_config(page_title="Solidus Approval Finder", layout="wide")
+st.set_page_config(page_title="Solidus Approval Finder", layout="narrow")
 
 HIDE = """
 <style>
@@ -179,9 +174,8 @@ if area == "HR":
     with cols[1]:
         bonus_amt = st.number_input("Bonus / discretionary payment (€)", min_value=0.0, step=1.0)
 
-# ─────────────────────────────────────────────────────────────
-# Rules
-# ─────────────────────────────────────────────────────────────
+# ---   Rules
+
 def capex_board_override(amount_eur: float) -> bool:
     try:
         return amount_eur is not None and float(amount_eur) >= 1_000_000
@@ -288,9 +282,8 @@ def get_hr_approver(salary: float, bonus: float):
     else:
         return ["CHRO"], ["CEO"]
 
-# ─────────────────────────────────────────────────────────────
-# Compute approver(s)
-# ─────────────────────────────────────────────────────────────
+# --  Compute approver(s)
+
 recommended: list[str] = []
 alternates: list[str] = []
 
@@ -316,9 +309,8 @@ elif area == "Other":
 elif area == "HR":
     recommended, alternates = get_hr_approver(salary_cost or 0.0, bonus_amt or 0.0)
 
-# ─────────────────────────────────────────────────────────────
-# Render result (same arrangement)
-# ─────────────────────────────────────────────────────────────
+# --- Result
+
 st.markdown("### 2) Approver(s)")
 
 # Recommended blocks

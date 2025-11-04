@@ -16,17 +16,22 @@ st.set_page_config(page_title="Solidus Approval Finder", layout="wide")
 
 HIDE = """
 <style>
+/* existing */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 .block-container {padding-top: 1rem; padding-bottom: 3rem;}
-.badge {
-  display:inline-block;background:#10b981;color:#062E2E;padding:.15rem .5rem;
-  border-radius:999px;font-weight:600;font-size:.8rem;vertical-align:middle;margin-left:.5rem;
-}
+.badge {display:inline-block;background:#10b981;color:#062E2E;padding:.15rem .5rem;border-radius:999px;font-weight:600;font-size:.8rem;vertical-align:middle;margin-left:.5rem;}
 .role-card {padding:1rem;border:1px solid #eaeaea;border-radius:.75rem;margin:.25rem 0;}
 .role-title{font-weight:700;}
 .small {color:#6b7280;}
 a.mail {text-decoration:none;}
+
+/* --- fix sidebar uploader overflow --- */
+[data-testid="stSidebar"] {min-width: 280px; max-width: 320px; overflow:auto;}
+[data-testid="stSidebar"] button {width:100%;}
+/* Ensure the dropzone stays inside the sidebar width */
+[data-testid="stFileUploader"] section {width:100% !important;}
+[data-testid="stFileUploadDropzone"] {width:100% !important; padding:.75rem !important; border-radius:.5rem;}
 </style>
 """
 st.markdown(HIDE, unsafe_allow_html=True)

@@ -366,8 +366,3 @@ else:
         st.markdown("<br>".join([f"• {n}" for n in notes]), unsafe_allow_html=True)
 
 st.divider()
-st.markdown(
-    "<div class='smallgray'>Email format: <b>firstname.lastname@solidus.com</b> "
-    "(hyphens preserved; middle names ignored). Use the sidebar to import/export the people CSV.</div>",
-    unsafe_allow_html=True,
-)

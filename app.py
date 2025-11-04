@@ -5,7 +5,7 @@ import pandas as pd
 from PIL import Image
 
 # -- Page config & branding
-st.set_page_config(page_title="Solidus Approval Finder", layout="wide")
+st.set_page_config(page_title="Financial Approval Finder", layout="wide")
 
 HIDE = """
 <style>

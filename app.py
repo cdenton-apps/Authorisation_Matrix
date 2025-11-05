@@ -355,7 +355,7 @@ if alternates:
             "Email": email,
         })
     alt_df = pd.DataFrame(alt_rows)[["Role","Current person","Email"]]
-    st.markdown("#### Alternative approvers (higher level)")
+    st.markdown("#### Alternative approvers")
     st.table(alt_df)
 
 st.divider()

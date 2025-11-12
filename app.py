@@ -198,7 +198,6 @@ def get_capex_approver(amount: float, within_budget: str):
             rec = "Controller / Finance manager"
         elif amount < 100_000:
             rec = "Location Director"
-            alts = ["Group Finance Director"]
         elif amount >= 100_000:
             rec = "CFO"
     else:

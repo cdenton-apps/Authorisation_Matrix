@@ -197,7 +197,8 @@ def get_capex_approver(amount: float, within_budget: str):
         if amount < 25_000:
             rec = "Controller / Finance manager"
         elif amount < 100_000:
-            rec = "Group Finance Director"
+            rec = "Location Director"
+            alts = ["Group Finance Director"]
         elif amount >= 100_000:
             rec = "CFO"
     else:
@@ -279,7 +280,7 @@ def get_hr_approver(salary: float, bonus: float):
     if (salary is not None and salary >= 125_000) or (bonus is not None and bonus >= 50_000):
         return ["CEO"], ["Solidus Investment / Board"]
     else:
-        return ["CHRO"], ["CEO"]
+        return ["Vice President Division"], ["CHRO"], ["CEO"]
 
 # --  Compute approver(s)
 

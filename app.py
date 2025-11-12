@@ -279,7 +279,7 @@ def get_hr_approver(salary: float, bonus: float):
     if (salary is not None and salary >= 125_000) or (bonus is not None and bonus >= 50_000):
         return ["CEO"], ["Solidus Investment / Board"]
     else:
-        return ["CHRO"], ["CEO"]
+        return ["CHRO"], ["Vice President Division", "CEO"]
 
 # --  Compute approver(s)
 

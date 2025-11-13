@@ -144,6 +144,7 @@ other_amount = None
 ebitda_impact = None
 salary_cost = None
 bonus_amt = None
+nonpo_amount = None  # NEW
 
 if area == "Purchase" and dtype == "Capital / Capex":
     within_ncb = st.selectbox("Within annual budget?", ["", "Yes", "No"], index=0)
@@ -156,6 +157,10 @@ if area == "Purchase" and dtype == "Purchase (contract) agreements":
     purchase_amount = st.number_input("Cumulative contract value (€)", min_value=0.0, step=1.0)
     if within_ncb == "":
         st.stop()
+
+# NEW: amount input for (non) PO-purchases without a contract
+if area == "Purchase" and dtype == "(non) PO-purchases without a contract":
+    nonpo_amount = st.number_input("Amount (€)", min_value=0.0, step=1.0)
 
 if area == "Sales":
     sales_amount = st.number_input("Amount (€)", min_value=0.0, step=1.0)
@@ -281,6 +286,20 @@ def get_hr_approver(salary: float, bonus: float):
     else:
         return ["CHRO"], ["Vice President Division", "CEO"]
 
+# NEW: rules for (non) PO-purchases without a contract
+def get_nonpo_approver(amount: float):
+    """
+    < 25k           → Location Manager
+    ≥ 25k and <100k → Vice President Division
+    ≥ 100k          → CFO
+    """
+    if amount < 25_000:
+        return ["Location Manager"], ["Vice President Division", "CFO"]
+    elif amount < 100_000:
+        return ["Vice President Division"], ["CFO", "CEO"]
+    else:
+        return ["CFO"], ["CEO"]
+
 # --  Compute approver(s)
 
 recommended: list[str] = []
@@ -293,8 +312,8 @@ elif area == "Purchase" and dtype == "Purchase (contract) agreements":
     recommended, alternates = get_purchase_contract_approver(purchase_amount, within_ncb)
 
 elif area == "Purchase" and dtype == "(non) PO-purchases without a contract":
-    # Lowest group control then escalate
-    recommended, alternates = ["Group Finance Director"], ["CFO", "CEO", "Solidus Investment / Board"]
+    # UPDATED: use amount mapping you specified
+    recommended, alternates = get_nonpo_approver(nonpo_amount or 0.0)
 
 elif area == "Purchase" and dtype == "Travel approval & Expense Reports":
     recommended, alternates = ["Direct reports"], ["Location Director", "Vice President Division", "CEO"]

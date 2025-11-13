@@ -54,7 +54,7 @@ DEFAULT_PEOPLE = pd.DataFrame([
     {"Role": "Group Finance Director",         "Person": "Hielke Bremer",         "Email": "hielke.bremer@solidus.com"},
     {"Role": "Group Legal",                    "Person": "David Kubala",          "Email": "david.kubala@solidus.com"},
     {"Role": "Vice President Division",        "Person": "Jan-Willem Kleppers",   "Email": "jan-willem.kleppers@solidus.com"},
-    {"Role": "Location Director",              "Person": "MD (Vacant)",           "Email": ""},
+    {"Role": "Location Director",              "Person": "Jeremy Anderson",       "Email": "jeremy.anderson@solidus.com"},
     {"Role": "Sales Director",                 "Person": "Paul Garstang",         "Email": "paul.garstang@solidus.com"},
     {"Role": "Controller / Finance manager",   "Person": "Tony Noble",            "Email": "tony.noble@solidus.com"},
 ])

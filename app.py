@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 
-# -- Page config & branding
+# -- config
 st.set_page_config(page_title="Financial Approval Finder", layout="wide")
 
 HIDE = """

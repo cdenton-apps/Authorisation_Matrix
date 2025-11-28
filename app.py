@@ -144,7 +144,7 @@ other_amount = None
 ebitda_impact = None
 salary_cost = None
 bonus_amt = None
-nonpo_amount = None  # NEW
+nonpo_amount = None
 
 if area == "Purchase" and dtype == "Capital / Capex":
     within_ncb = st.selectbox("Within annual budget?", ["", "Yes", "No"], index=0)
@@ -158,7 +158,6 @@ if area == "Purchase" and dtype == "Purchase (contract) agreements":
     if within_ncb == "":
         st.stop()
 
-# NEW: amount input for (non) PO-purchases without a contract
 if area == "Purchase" and dtype == "(non) PO-purchases without a contract":
     nonpo_amount = st.number_input("Amount (€)", min_value=0.0, step=1.0)
 
@@ -217,7 +216,7 @@ def get_capex_approver(amount: float, within_budget: str):
     return [rec], alts
 
 def get_purchase_contract_approver(amount: float, within_course: str):
-    # Ranges from matrix + example (lowest level first)
+    # -- (lowest level first)
     if within_course == "Yes":
         if amount < 100_000:
             rec = "Location Director"           # < €100k
@@ -269,7 +268,7 @@ def get_other_approver(dtype: str, amount: float|None, ebitda: float|None):
     if amount is None:
         return [], []
     if amount < 2_500:
-        # Not explicitly in matrix; treat as no special approval required -> recommend Controller as lowest control point
+        # treat as no special approval required -> recommend Controller as lowest control point
         return ["Controller / Finance manager"], ["Location Director", "Vice President Division", "CFO"]
     elif amount < 10_000:
         return ["Controller / Finance manager"], ["Location Director", "Vice President Division", "CFO"]
@@ -286,7 +285,7 @@ def get_hr_approver(salary: float, bonus: float):
     else:
         return ["CHRO"], ["Vice President Division", "CEO"]
 
-# NEW: rules for (non) PO-purchases without a contract
+# rules for (non) PO-purchases without a contract
 def get_nonpo_approver(amount: float):
     """
     < 25k           → Location Manager
@@ -312,7 +311,6 @@ elif area == "Purchase" and dtype == "Purchase (contract) agreements":
     recommended, alternates = get_purchase_contract_approver(purchase_amount, within_ncb)
 
 elif area == "Purchase" and dtype == "(non) PO-purchases without a contract":
-    # UPDATED: use amount mapping you specified
     recommended, alternates = get_nonpo_approver(nonpo_amount or 0.0)
 
 elif area == "Purchase" and dtype == "Travel approval & Expense Reports":
@@ -384,18 +382,18 @@ with st.expander("Clarifications, guidelines & definitions"):
 **If multiple approvers qualify, go lowest level first.**
 
 **Purchase**  
-- **Purchase (contract) agreements** — Contracts/POs/verbal commitments (incl. software). Approval based on **cumulative contract value**.  
-- **(non) PO-purchases without a contract** — Use only when no contract exists.  
+- **Purchase (contract) agreements** Contracts/POs/verbal commitments (incl. software). Approval based on **cumulative contract value**.  
+- **(non) PO-purchases without a contract** Use only when no contract exists.  
 - **Capital/Capex** — Any spend capitalized under policy (machinery, vehicles, land, buildings).  
 
 **Sales**  
-- **Quotes & Customer Contracts** — Agreements defining commercial terms.  
-- **Credit Limits / Shipment blocks / Credit notes** — Establishing/adjusting limits; significant one-offs.  
+- **Quotes & Customer Contracts** Agreements defining commercial terms.  
+- **Credit Limits / Shipment blocks / Credit notes** Establishing/adjusting limits; significant one-offs.  
 
 **Other**  
-- **Stock corrections / counting differences / disposals** — Use thresholds per matrix.  
-- **Manual journal posting review** — Threshold based on **EBITDA impact**.
+- **Stock corrections / counting differences / disposals** Use thresholds per matrix.  
+- **Manual journal posting review** Threshold based on **EBITDA impact**.
 
 **HR**  
-- **Employment & Benefits** — Hiring, dismissal, transfers, comp/benefits changes, discretionary payments.
+- **Employment & Benefits** Hiring, dismissal, transfers, comp/benefits changes, discretionary payments.
 """)
